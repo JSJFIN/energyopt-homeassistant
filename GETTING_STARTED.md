@@ -57,11 +57,13 @@ of the price curve. That's the whole idea working.
 4. Your devices appear with entities like
    `binary_sensor.water_boiler_should_run`, next start/end times, and a
    plain-language reason sensor.
-5. To actually switch something: **Settings → Automations → Blueprints →
-   Import blueprint** and paste
-   `https://raw.githubusercontent.com/JSJFIN/energyopt-homeassistant/main/blueprints/automation/energyopt/control_switch_from_schedule.yaml`
-   — then create an automation from it: pick the EnergyOpt sensor and the
-   switch it should control. Done.
+5. To actually switch something, import the blueprint (one click):
+
+   [![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fraw.githubusercontent.com%2FJSJFIN%2Fenergyopt-homeassistant%2Fmain%2Fblueprints%2Fautomation%2Fenergyopt%2Fcontrol_switch_from_schedule.yaml)
+
+   Then create an automation from it: pick the EnergyOpt sensor and the
+   switch it should control. Done. (The blueprint doesn't come with HACS —
+   blueprints are always imported separately.)
 
 New devices you add in the web UI appear in HA by themselves within a few
 minutes.

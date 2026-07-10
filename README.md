@@ -40,8 +40,13 @@ Manual install: copy `custom_components/energyopt` into your HA
 
 [`control_switch_from_schedule.yaml`](blueprints/automation/energyopt/control_switch_from_schedule.yaml)
 turns a switch (or input_boolean) on/off following the should-run sensor,
-with an optional manual override and minimum on-time. Import it in
-Settings → Automations → Blueprints → Import, using the raw file URL.
+with an optional manual override and minimum on-time. One-click import:
+
+[![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fraw.githubusercontent.com%2FJSJFIN%2Fenergyopt-homeassistant%2Fmain%2Fblueprints%2Fautomation%2Fenergyopt%2Fcontrol_switch_from_schedule.yaml)
+
+(or paste the raw file URL into Settings → Automations → Blueprints → Import;
+note that HACS installs the integration only — blueprints are always
+imported separately, that's a Home Assistant limitation).
 
 ## Offline behavior
 
