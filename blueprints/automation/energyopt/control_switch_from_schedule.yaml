@@ -1,0 +1,87 @@
+blueprint:
+  name: EnergyOpt - Control switch from schedule
+  description: >
+    Turn a switch on or off based on an EnergyOpt "should run" binary sensor.
+    Optionally honour a manual override boolean and a minimum on time.
+  domain: automation
+  source_url: https://github.com/JSJFIN/energyopt-homeassistant/blob/main/blueprints/automation/energyopt/control_switch_from_schedule.yaml
+  input:
+    should_run_sensor:
+      name: EnergyOpt binary sensor
+      description: The EnergyOpt "should run" binary sensor for the device.
+      selector:
+        entity:
+          filter:
+            domain: binary_sensor
+    target_switch:
+      name: Target switch
+      description: >
+        The entity to control: a switch, or an input_boolean helper for
+        testing without switching a real load.
+      selector:
+        entity:
+          filter:
+            domain:
+              - switch
+              - input_boolean
+    manual_override:
+      name: Manual override (optional)
+      description: >
+        If this input_boolean is on, the automation does nothing. Leave empty
+        to disable the override.
+      default: ""
+      selector:
+        entity:
+          filter:
+            domain: input_boolean
+    minimum_on_time:
+      name: Minimum on time (optional)
+      description: >
+        Minimum time the switch stays on after being turned on. Set to 0 to
+        disable.
+      default:
+        hours: 0
+        minutes: 0
+        seconds: 0
+      selector:
+        duration: {}
+
+mode: restart
+
+trigger:
+  - platform: state
+    entity_id: !input should_run_sensor
+    to: "on"
+    id: should_run_on
+  - platform: state
+    entity_id: !input should_run_sensor
+    to: "off"
+    id: should_run_off
+
+variables:
+  manual_override_entity: !input manual_override
+
+condition:
+  - condition: template
+    value_template: >
+      {{ manual_override_entity == none
+         or manual_override_entity == ''
+         or is_state(manual_override_entity, 'off') }}
+
+action:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: should_run_on
+        sequence:
+          - service: homeassistant.turn_on
+            target:
+              entity_id: !input target_switch
+      - conditions:
+          - condition: trigger
+            id: should_run_off
+        sequence:
+          - delay: !input minimum_on_time
+          - service: homeassistant.turn_off
+            target:
+              entity_id: !input target_switch

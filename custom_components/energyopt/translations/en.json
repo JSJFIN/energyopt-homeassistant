@@ -1,0 +1,23 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to EnergyOpt",
+        "description": "Enter the details for your EnergyOpt site.",
+        "data": {
+          "base_url": "API base URL",
+          "api_key": "API key",
+          "site_id": "Site ID",
+          "poll_interval": "Poll interval (seconds)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to the EnergyOpt API.",
+      "invalid_auth": "Invalid authentication. Check your API key."
+    },
+    "abort": {
+      "already_configured": "This EnergyOpt site is already configured."
+    }
+  }
+}
