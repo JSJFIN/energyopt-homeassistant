@@ -7,7 +7,7 @@ CONF_API_KEY = "api_key"
 CONF_SITE_ID = "site_id"
 CONF_POLL_INTERVAL = "poll_interval"
 
-DEFAULT_BASE_URL = "https://api.energyopt.example"
+DEFAULT_BASE_URL = "https://energyopt.ailabra.org"
 DEFAULT_SITE_ID = "demo"
 DEFAULT_POLL_INTERVAL = 300
 
