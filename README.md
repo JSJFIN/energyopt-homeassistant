@@ -53,5 +53,6 @@ your devices — Home Assistant always switches locally.
 
 ## Links
 
+- **New here? Full walkthrough: [GETTING_STARTED.md](GETTING_STARTED.md)**
 - Web UI / account: https://energyopt.ailabra.org
 - Issues: https://github.com/JSJFIN/energyopt-homeassistant/issues
