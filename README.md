@@ -22,7 +22,9 @@ Per device:
 Site-level: prices-loaded-until timestamp and a status sensor.
 
 Devices added or removed in the web UI appear/disappear in Home Assistant
-automatically within one poll interval — no reload needed.
+automatically within one poll interval — no reload needed. Devices of the
+**Shelly switch** type never appear here: they control themselves via the
+generated script, and one device should have exactly one controller.
 
 ## Installation (HACS)
 
