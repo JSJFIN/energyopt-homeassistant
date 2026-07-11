@@ -13,7 +13,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
 from . import EnergyOptConfigEntry
-from .const import DOMAIN
+from .const import DOMAIN, SELF_CONTROLLED_TYPES
 from .coordinator import EnergyOptCoordinator
 
 
@@ -46,7 +46,9 @@ async def async_setup_entry(
         current_ids = {
             device["id"]
             for device in devices
-            if isinstance(device, dict) and device.get("id")
+            if isinstance(device, dict)
+            and device.get("id")
+            and device.get("type") not in SELF_CONTROLLED_TYPES
         }
         # Forget departed ids so a removed-then-readded device is recreated.
         known_ids.intersection_update(current_ids)
@@ -57,6 +59,10 @@ async def async_setup_entry(
                 continue
             device_id = device.get("id")
             if not device_id or device_id in known_ids:
+                continue
+            if device.get("type") in SELF_CONTROLLED_TYPES:
+                # Self-controlled (e.g. Shelly-script) devices get no HA
+                # entities: one controller per device.
                 continue
             known_ids.add(device_id)
             new_entities.extend(

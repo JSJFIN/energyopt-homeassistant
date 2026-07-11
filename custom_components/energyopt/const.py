@@ -19,3 +19,7 @@ STALE_MULTIPLIER = 3
 # How often the coordinator nudges entities to re-evaluate time-based state
 # (schedule window boundaries, staleness) between polls, in seconds.
 TICK_INTERVAL_SECONDS = 60
+
+# Device types that control themselves (e.g. a Shelly running the
+# EnergyOpt script). Skipped in HA entirely: one controller per device.
+SELF_CONTROLLED_TYPES = ("shelly_switch",)

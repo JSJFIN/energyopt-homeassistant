@@ -10,6 +10,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from .const import (
+    SELF_CONTROLLED_TYPES,
     CONF_API_KEY,
     CONF_BASE_URL,
     CONF_POLL_INTERVAL,
@@ -99,7 +100,9 @@ def _prune_removed_devices(
     current_ids = {
         device["id"]
         for device in devices
-        if isinstance(device, dict) and device.get("id")
+        if isinstance(device, dict)
+        and device.get("id")
+        and device.get("type") not in SELF_CONTROLLED_TYPES
     }
     site_prefix = f"{entry.entry_id}_site_"
 
