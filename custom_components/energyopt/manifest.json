@@ -1,11 +1,13 @@
 {
   "domain": "energyopt",
   "name": "EnergyOpt",
-  "codeowners": ["@JSJFIN"],
+  "codeowners": [
+    "@JSJFIN"
+  ],
   "config_flow": true,
   "documentation": "https://github.com/JSJFIN/energyopt-homeassistant",
   "issue_tracker": "https://github.com/JSJFIN/energyopt-homeassistant/issues",
   "iot_class": "cloud_polling",
   "requirements": [],
-  "version": "0.2.1"
+  "version": "0.2.2"
 }
