@@ -23,6 +23,7 @@ from homeassistant.helpers.selector import (
 
 from .const import (
     CONF_API_KEY,
+    CONF_ENABLE_CALENDARS,
     CONF_BASE_URL,
     CONF_POLL_INTERVAL,
     CONF_SITE_ID,
@@ -204,11 +205,13 @@ class EnergyOptOptionsFlow(OptionsFlow):
             CONF_POLL_INTERVAL,
             self.config_entry.data.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL),
         )
+        calendars = self.config_entry.options.get(CONF_ENABLE_CALENDARS, True)
         data_schema = vol.Schema(
             {
                 vol.Required(CONF_POLL_INTERVAL, default=current): vol.All(
                     vol.Coerce(int), vol.Range(min=30)
                 ),
+                vol.Required(CONF_ENABLE_CALENDARS, default=calendars): bool,
             }
         )
         return self.async_show_form(step_id="init", data_schema=data_schema)

@@ -31,7 +31,8 @@ Site-level:
   price is in the cheap / expensive band
 
 Devices added or removed in the web UI appear/disappear in Home Assistant
-automatically within one poll interval — no reload needed. Devices of the
+automatically within one poll interval — no reload needed. Schedule
+calendars are optional (integration options, on by default). Devices of the
 **Shelly switch** type never appear here: they control themselves via the
 generated script, and one device should have exactly one controller.
 

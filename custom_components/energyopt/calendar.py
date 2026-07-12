@@ -7,13 +7,14 @@ from typing import Any
 
 from homeassistant.components.calendar import CalendarEntity, CalendarEvent
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
 from . import EnergyOptConfigEntry
-from .const import DOMAIN, SELF_CONTROLLED_TYPES
+from .const import CONF_ENABLE_CALENDARS, DOMAIN, SELF_CONTROLLED_TYPES
 from .coordinator import EnergyOptCoordinator
 
 
@@ -26,8 +27,18 @@ async def async_setup_entry(
 
     One calendar is created per (non-self-controlled) device in the initial
     payload, then a coordinator listener creates calendars for devices that
-    appear in later polls without requiring an integration reload.
+    appear in later polls without requiring an integration reload. Calendars
+    are optional: when disabled in the entry options, none are created and
+    previously created ones are removed (options changes reload the entry,
+    so toggling takes effect immediately).
     """
+    if not entry.options.get(CONF_ENABLE_CALENDARS, True):
+        ent_reg = er.async_get(hass)
+        for reg_entry in er.async_entries_for_config_entry(ent_reg, entry.entry_id):
+            if reg_entry.unique_id.endswith("_calendar"):
+                ent_reg.async_remove(reg_entry.entity_id)
+        return
+
     coordinator = entry.runtime_data
     known_ids: set[str] = set()
 
