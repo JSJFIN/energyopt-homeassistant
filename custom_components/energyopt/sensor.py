@@ -73,6 +73,15 @@ DEVICE_SENSORS: tuple[EnergyOptDeviceSensorDescription, ...] = (
 
 SITE_SENSORS: tuple[EnergyOptSiteSensorDescription, ...] = (
     EnergyOptSiteSensorDescription(
+        key="price_now",
+        translation_key="price_now",
+        name="Price now",
+        icon="mdi:currency-eur",
+        native_unit_of_measurement="c/kWh",
+        suggested_display_precision=2,
+        value_fn=lambda data: data.get("price_now_cents_kwh"),
+    ),
+    EnergyOptSiteSensorDescription(
         key="prices_loaded_until",
         translation_key="prices_loaded_until",
         name="Prices loaded until",

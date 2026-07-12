@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, time
 from typing import Any
 
-from homeassistant.components.binary_sensor import BinarySensorEntity
+from homeassistant.components.binary_sensor import (
+    BinarySensorEntity,
+    BinarySensorEntityDescription,
+)
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -15,6 +20,52 @@ from homeassistant.util import dt as dt_util
 from . import EnergyOptConfigEntry
 from .const import DOMAIN, SELF_CONTROLLED_TYPES
 from .coordinator import EnergyOptCoordinator
+
+
+def _nullable_bool(value: Any) -> bool | None:
+    """Return None for a null/missing payload value, else its truthiness."""
+    if value is None:
+        return None
+    return bool(value)
+
+
+@dataclass(frozen=True, kw_only=True)
+class EnergyOptSiteBinarySensorDescription(BinarySensorEntityDescription):
+    """Describes an EnergyOpt site-level binary sensor.
+
+    ``is_on_fn`` receives the payload and the coordinator staleness flag and
+    returns True/False, or None to report an unknown state.
+    """
+
+    is_on_fn: Callable[[dict[str, Any], bool], bool | None]
+
+
+SITE_BINARY_SENSORS: tuple[EnergyOptSiteBinarySensorDescription, ...] = (
+    EnergyOptSiteBinarySensorDescription(
+        key="prices_loaded",
+        translation_key="prices_loaded",
+        name="Prices loaded",
+        icon="mdi:database-check",
+        # Stale cache must not claim prices are fine.
+        is_on_fn=lambda data, stale: False
+        if stale
+        else bool(data.get("prices_loaded")),
+    ),
+    EnergyOptSiteBinarySensorDescription(
+        key="cheap_now",
+        translation_key="cheap_now",
+        name="Cheap now",
+        icon="mdi:arrow-down-bold-circle",
+        is_on_fn=lambda data, stale: _nullable_bool(data.get("cheap_now")),
+    ),
+    EnergyOptSiteBinarySensorDescription(
+        key="expensive_now",
+        translation_key="expensive_now",
+        name="Expensive now",
+        icon="mdi:arrow-up-bold-circle",
+        is_on_fn=lambda data, stale: _nullable_bool(data.get("expensive_now")),
+    ),
+)
 
 
 def _build_device_entities(
@@ -34,6 +85,7 @@ async def async_setup_entry(
     Devices are created for every device in the initial payload, then a
     coordinator listener creates entities for devices that appear in later
     polls (added in the web UI) without requiring an integration reload.
+    Site-level binary sensors are created once here.
     """
     coordinator = entry.runtime_data
     known_ids: set[str] = set()
@@ -72,6 +124,12 @@ async def async_setup_entry(
             async_add_entities(new_entities)
 
     _add_new_devices()
+    async_add_entities(
+        [
+            EnergyOptSiteBinarySensor(coordinator, entry.entry_id, description)
+            for description in SITE_BINARY_SENSORS
+        ]
+    )
     entry.async_on_unload(coordinator.async_add_listener(_add_new_devices))
 
 
@@ -203,3 +261,42 @@ class EnergyOptShouldRunBinarySensor(
             "data_stale": self.coordinator.data_stale,
             "last_update": self.coordinator.data.get("updated_at"),
         }
+
+
+class EnergyOptSiteBinarySensor(
+    CoordinatorEntity[EnergyOptCoordinator], BinarySensorEntity
+):
+    """A site-level EnergyOpt binary sensor."""
+
+    entity_description: EnergyOptSiteBinarySensorDescription
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: EnergyOptCoordinator,
+        entry_id: str,
+        description: EnergyOptSiteBinarySensorDescription,
+    ) -> None:
+        """Initialize the site binary sensor."""
+        super().__init__(coordinator)
+        self.entity_description = description
+        self._attr_unique_id = f"{entry_id}_site_{description.key}"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, f"{entry_id}_site")},
+            name=f"EnergyOpt site {coordinator.data.get('site_id', 'site')}",
+            manufacturer="EnergyOpt",
+            model="site",
+        )
+
+    @property
+    def available(self) -> bool:
+        """Return True whenever data is retained, even after a failed poll."""
+        return self.coordinator.data is not None
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return the site state, or None when the payload value is absent."""
+        data = self.coordinator.data
+        if data is None:
+            return None
+        return self.entity_description.is_on_fn(data, self.coordinator.data_stale)

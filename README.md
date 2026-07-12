@@ -18,13 +18,27 @@ Per device:
 - `sensor.<device>_reason` — plain-language explanation
   ("Next cheap window 01:00–03:00 tomorrow.")
 - `sensor.<device>_estimated_cost` — EUR for the next run
+- `calendar.<device>_schedule` — upcoming run windows as calendar events
 
-Site-level: prices-loaded-until timestamp and a status sensor.
+Site-level:
+
+- `sensor.<site>_price_now` — current spot price (c/kWh)
+- `sensor.<site>_prices_loaded_until` — timestamp prices are loaded through
+- `sensor.<site>_status` — health/status (`stale` when data is old)
+- `binary_sensor.<site>_prices_loaded` — on when day-ahead prices are loaded
+  (off while data is stale)
+- `binary_sensor.<site>_cheap_now` / `_expensive_now` — on when the current
+  price is in the cheap / expensive band
 
 Devices added or removed in the web UI appear/disappear in Home Assistant
 automatically within one poll interval — no reload needed. Devices of the
 **Shelly switch** type never appear here: they control themselves via the
 generated script, and one device should have exactly one controller.
+
+The integration exposes an **options** flow (adjust the poll interval) and a
+**reconfigure** flow (update base URL, API key, or site ID) from its entry in
+Settings → Devices & Services, and provides **diagnostics** downloads with the
+API key redacted.
 
 ## Installation (HACS)
 

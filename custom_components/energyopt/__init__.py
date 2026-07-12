@@ -19,7 +19,11 @@ from .const import (
 )
 from .coordinator import EnergyOptCoordinator
 
-PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.SENSOR]
+PLATFORMS: list[Platform] = [
+    Platform.BINARY_SENSOR,
+    Platform.CALENDAR,
+    Platform.SENSOR,
+]
 
 type EnergyOptConfigEntry = ConfigEntry[EnergyOptCoordinator]
 
@@ -28,12 +32,18 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: EnergyOptConfigEntry
 ) -> bool:
     """Set up EnergyOpt from a config entry."""
+    # Options (editable via the options flow) take precedence over the value
+    # captured at initial setup in entry.data.
+    poll_interval = entry.options.get(
+        CONF_POLL_INTERVAL,
+        entry.data.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL),
+    )
     coordinator = EnergyOptCoordinator(
         hass,
         base_url=entry.data[CONF_BASE_URL],
         api_key=entry.data[CONF_API_KEY],
         site_id=entry.data[CONF_SITE_ID],
-        poll_interval=entry.data.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL),
+        poll_interval=poll_interval,
     )
 
     await coordinator.async_config_entry_first_refresh()
@@ -42,6 +52,9 @@ async def async_setup_entry(
     entry.async_on_unload(coordinator.async_shutdown)
 
     entry.runtime_data = coordinator
+
+    # Reload the entry when options change (e.g. a new poll interval).
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -59,7 +72,14 @@ async def async_setup_entry(
 # binary_sensor.py and sensor.py DEVICE_SENSORS. Device slugs contain
 # underscores ("pump_2"), so prefix matching against device ids is ambiguous —
 # the id is recovered by stripping a known key suffix instead.
-_DEVICE_ENTITY_KEYS = ("should_run", "next_start", "next_end", "reason", "estimated_cost")
+_DEVICE_ENTITY_KEYS = (
+    "should_run",
+    "next_start",
+    "next_end",
+    "reason",
+    "estimated_cost",
+    "calendar",
+)
 
 
 def _device_id_from_unique_id(unique_id: str, entry_id: str) -> str | None:
@@ -124,6 +144,13 @@ def _prune_removed_devices(
     for device in dr.async_entries_for_config_entry(dev_reg, entry.entry_id):
         if device.id not in used_device_ids:
             dev_reg.async_remove_device(device.id)
+
+
+async def _async_update_listener(
+    hass: HomeAssistant, entry: EnergyOptConfigEntry
+) -> None:
+    """Reload the entry when its options change."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(

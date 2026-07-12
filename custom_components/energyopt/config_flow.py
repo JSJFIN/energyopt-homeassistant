@@ -7,8 +7,19 @@ from typing import Any
 import aiohttp
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
+from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.selector import (
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
+)
 
 from .const import (
     CONF_API_KEY,
@@ -28,6 +39,12 @@ class EnergyOptConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for EnergyOpt."""
 
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> EnergyOptOptionsFlow:
+        """Return the options flow handler."""
+        return EnergyOptOptionsFlow()
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -106,3 +123,92 @@ class EnergyOptConfigFlow(ConfigFlow, domain=DOMAIN):
             return "cannot_connect", None
         site_name = data.get("site_name") if isinstance(data, dict) else None
         return None, site_name
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle reconfiguration of an existing entry."""
+        errors: dict[str, str] = {}
+        entry = self._get_reconfigure_entry()
+
+        if user_input is not None:
+            base_url = user_input[CONF_BASE_URL].rstrip("/")
+            site_id = user_input[CONF_SITE_ID]
+            # An empty API key field means "keep the current key".
+            api_key = user_input.get(CONF_API_KEY) or entry.data[CONF_API_KEY]
+
+            new_unique_id = f"{base_url}:{site_id}"
+            await self.async_set_unique_id(new_unique_id)
+            # Don't let this entry be pointed at an already-configured site.
+            for other in self._async_current_entries():
+                if (
+                    other.entry_id != entry.entry_id
+                    and other.unique_id == new_unique_id
+                ):
+                    return self.async_abort(reason="already_configured")
+
+            error, _ = await self._async_validate(base_url, api_key, site_id)
+            if error is None:
+                return self.async_update_reload_and_abort(
+                    entry,
+                    unique_id=new_unique_id,
+                    data={
+                        CONF_BASE_URL: base_url,
+                        CONF_API_KEY: api_key,
+                        CONF_SITE_ID: site_id,
+                        CONF_POLL_INTERVAL: entry.data.get(
+                            CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL
+                        ),
+                    },
+                )
+            errors["base"] = error
+
+        prefill = user_input or {}
+        data_schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_BASE_URL,
+                    default=prefill.get(
+                        CONF_BASE_URL, entry.data.get(CONF_BASE_URL, DEFAULT_BASE_URL)
+                    ),
+                ): str,
+                # Rendered as an empty password field: blank keeps the current key.
+                vol.Optional(CONF_API_KEY): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                ),
+                vol.Required(
+                    CONF_SITE_ID,
+                    default=prefill.get(
+                        CONF_SITE_ID, entry.data.get(CONF_SITE_ID, DEFAULT_SITE_ID)
+                    ),
+                ): str,
+            }
+        )
+
+        return self.async_show_form(
+            step_id="reconfigure", data_schema=data_schema, errors=errors
+        )
+
+
+class EnergyOptOptionsFlow(OptionsFlow):
+    """Handle the EnergyOpt options flow."""
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Manage the poll interval."""
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        current = self.config_entry.options.get(
+            CONF_POLL_INTERVAL,
+            self.config_entry.data.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL),
+        )
+        data_schema = vol.Schema(
+            {
+                vol.Required(CONF_POLL_INTERVAL, default=current): vol.All(
+                    vol.Coerce(int), vol.Range(min=30)
+                ),
+            }
+        )
+        return self.async_show_form(step_id="init", data_schema=data_schema)
