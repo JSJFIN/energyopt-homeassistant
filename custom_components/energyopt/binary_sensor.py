@@ -20,14 +20,6 @@ from homeassistant.util import dt as dt_util
 from . import EnergyOptConfigEntry
 from .const import DOMAIN, SELF_CONTROLLED_TYPES
 from .coordinator import EnergyOptCoordinator
-from .solar import SolarConfig, SolarDecision, SolarState, evaluate_solar
-
-# Default timers when the payload omits them (see solar_excess_spec.md §2).
-_DEFAULT_MIN_ON_MINUTES = 10
-_DEFAULT_MIN_OFF_MINUTES = 5
-
-# A "no solar" decision reused whenever solar is off/unconfigured/invalid.
-_NO_SOLAR = SolarDecision(solar_on=False, state=SolarState(), excess_w=None, hold_until=None)
 
 
 def _nullable_bool(value: Any) -> bool | None:
@@ -160,9 +152,6 @@ class EnergyOptShouldRunBinarySensor(
         super().__init__(coordinator)
         self._device_id = device_id
         self._attr_unique_id = f"{entry_id}_{device_id}_should_run"
-        # Local excess-solar memory (entity-instance only, lost on HA restart).
-        self._solar_state = SolarState()
-        self._solar_decision = _NO_SOLAR
         device = self._get_device() or {}
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, f"{entry_id}_{device_id}")},
@@ -196,88 +185,6 @@ class EnergyOptShouldRunBinarySensor(
         """
         return self.coordinator.data is not None and self._get_device() is not None
 
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Advance the local solar state machine once per coordinator update.
-
-        Runs on every poll and every 60 s ticker nudge (both call
-        ``async_update_listeners``), so no extra listener is needed. State is
-        advanced here exactly once per update; ``is_on`` / attributes read the
-        cached decision to avoid double-stepping the timers.
-        """
-        self._refresh_solar()
-        super()._handle_coordinator_update()
-
-    def _build_solar_config(self, device: dict[str, Any]) -> SolarConfig | None:
-        """Build a SolarConfig from the device payload, or None if not applicable.
-
-        Codes defensively: payload keys may be absent. Returns None when solar
-        is off, the device is self-controlled, or required fields are missing;
-        the validity of thresholds is enforced by ``evaluate_solar`` itself.
-        """
-        if not device.get("use_solar"):
-            return None
-        if device.get("type") in SELF_CONTROLLED_TYPES:
-            return None
-        entity_id = device.get("solar_entity_id")
-        source_type = device.get("solar_source_type")
-        if not entity_id or not source_type:
-            return None
-
-        try:
-            power_kw = float(device.get("power_kw") or 0)
-        except (TypeError, ValueError):
-            power_kw = 0.0
-        device_power_w = round(power_kw * 1000)
-
-        start_w = device.get("solar_start_w")
-        if start_w is None:
-            start_w = device_power_w
-        stop_w = device.get("solar_stop_w")
-        if stop_w is None:
-            if source_type == "production":
-                stop_w = max(100, round(int(start_w) * 0.5)) if start_w else 0
-            else:
-                stop_w = 100
-        min_on = device.get("solar_min_on_minutes")
-        min_on = _DEFAULT_MIN_ON_MINUTES if min_on is None else min_on
-        min_off = device.get("solar_min_off_minutes")
-        min_off = _DEFAULT_MIN_OFF_MINUTES if min_off is None else min_off
-
-        try:
-            return SolarConfig(
-                use_solar=True,
-                entity_id=str(entity_id),
-                source_type=str(source_type),
-                start_w=int(start_w),
-                stop_w=int(stop_w),
-                min_on_minutes=int(min_on),
-                min_off_minutes=int(min_off),
-                device_power_w=int(device_power_w),
-            )
-        except (TypeError, ValueError):
-            return None
-
-    def _refresh_solar(self) -> None:
-        """Read the configured sensor and step the local solar decision."""
-        device = self._get_device()
-        config = self._build_solar_config(device) if device else None
-        if config is None:
-            self._solar_decision = _NO_SOLAR
-            self._solar_state = SolarState()
-            return
-
-        # Read the sensor locally; guard against hass not being attached yet.
-        sensor_value: str | None = None
-        if self.hass is not None:
-            state = self.hass.states.get(config.entity_id)
-            if state is not None:
-                sensor_value = state.state
-
-        decision = evaluate_solar(config, sensor_value, dt_util.now(), self._solar_state)
-        self._solar_state = decision.state
-        self._solar_decision = decision
-
     def _evaluate(self, device: dict[str, Any]) -> tuple[bool, bool]:
         """Compute (should_run, is_fallback) locally from the retained data.
 
@@ -307,22 +214,14 @@ class EnergyOptShouldRunBinarySensor(
 
         # An active schedule window covering "now" always wins; a valid
         # upcoming cached window means the schedule is still authoritative.
-        has_upcoming = False
-        for window in device.get("schedule") or []:
-            if not isinstance(window, dict):
-                continue
-            start = window.get("start")
-            end = window.get("end")
-            if not (isinstance(start, datetime) and isinstance(end, datetime)):
-                continue
-            if start <= now < end:
-                return True, payload_fallback
-            if start > now:
-                has_upcoming = True
+        covers_now, has_upcoming = self.coordinator.schedule_window_status(device, now)
+        if covers_now:
+            return True, payload_fallback
 
         # Solar sits above fallback: it depends on no cloud data, so a stale
         # site with sun runs on solar_on and never reaches the fallback rung.
-        if self._solar_decision.solar_on:
+        solar = self.coordinator.get_solar(device)
+        if solar is not None and solar.solar_on:
             return True, False
 
         # Fall back only when the cached schedule has nothing left to say and
@@ -368,7 +267,7 @@ class EnergyOptShouldRunBinarySensor(
         """Return additional device and schedule attributes."""
         device = self._get_device() or {}
         final_on, is_fallback = self._evaluate(device) if device else (False, False)
-        solar = self._solar_decision
+        solar = self.coordinator.get_solar(device) if device else None
         return {
             "device_id": device.get("id"),
             "device_name": device.get("name"),
@@ -383,22 +282,13 @@ class EnergyOptShouldRunBinarySensor(
             "data_stale": self.coordinator.data_stale,
             "last_update": self.coordinator.data.get("updated_at"),
             # Solar adds attributes; it never rewrites the server reason (§6).
-            "solar_active": solar.solar_on and final_on,
-            "solar_excess_w": solar.excess_w,
-            "solar_hold_until": solar.hold_until,
-            "solar_reason": self._solar_reason(solar, final_on),
+            "solar_active": bool(solar is not None and solar.solar_on and final_on),
+            "solar_excess_w": solar.excess_w if solar is not None else None,
+            "solar_hold_until": solar.hold_until if solar is not None else None,
+            "solar_reason": self.coordinator.solar_reason(device, final_on)
+            if device
+            else None,
         }
-
-    @staticmethod
-    def _solar_reason(solar: SolarDecision, final_on: bool) -> str | None:
-        """Return a short local explanation of the solar contribution, or None."""
-        if solar.solar_on:
-            if final_on:
-                return "Running on excess solar"
-            return "Solar excess available (suppressed)"
-        if solar.hold_until is not None:
-            return "Solar off-hold (min-off) active"
-        return None
 
 
 class EnergyOptSiteBinarySensor(

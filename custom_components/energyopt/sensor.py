@@ -16,6 +16,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
 from . import EnergyOptConfigEntry
 from .const import DOMAIN, SELF_CONTROLLED_TYPES
@@ -220,11 +221,40 @@ class EnergyOptDeviceSensor(
 
     @property
     def native_value(self) -> datetime | str | float | None:
-        """Return the sensor value."""
+        """Return the sensor value.
+
+        The "reason" sensor is solar-aware: when solar is driving the device it
+        reflects that, so it doesn't keep showing the server's price-schedule
+        reason while the device is actually ON from excess solar. Every other
+        sensor returns its plain payload value. The server ``reason`` in the
+        payload/attributes is untouched.
+        """
         device = self._get_device()
         if device is None:
             return None
+        if self.entity_description.key == "reason":
+            return self._compose_reason(device)
         return self.entity_description.value_fn(device)
+
+    def _compose_reason(self, device: dict[str, Any]) -> str | None:
+        """Compose the reason string, folding in solar when it drives the device.
+
+        - solar not driving: the server reason, unchanged.
+        - solar on AND a schedule window also covers now: server reason +
+          " Also running on excess solar."
+        - solar on and no window: the local solar_reason (e.g. "Running on
+          excess solar").
+        """
+        server_reason = device.get("reason")
+        solar = self.coordinator.get_solar(device)
+        if solar is None or not solar.solar_on:
+            return server_reason
+        covers_now, _ = self.coordinator.schedule_window_status(device, dt_util.now())
+        if covers_now:
+            if server_reason:
+                return f"{server_reason} Also running on excess solar."
+            return "Also running on excess solar."
+        return self.coordinator.solar_reason(device, final_on=True)
 
 
 class EnergyOptSiteSensor(

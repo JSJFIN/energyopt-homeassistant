@@ -86,6 +86,10 @@ Extra attributes on the `should_run` sensor expose the current state:
 (signed surplus in watts, or null when the sensor has no reading), and
 `solar_hold_until` (when the active min-on/min-off timer expires).
 
+The `reason` sensor reflects solar when solar is driving the device: it shows
+the solar explanation (or appends it to the price reason when a price window is
+also active) instead of only the server's price-schedule reason.
+
 ## Offline behavior
 
 Entities keep working from the last fetched schedule during cloud outages:
