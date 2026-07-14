@@ -65,6 +65,27 @@ with an optional manual override and minimum on-time. One-click import:
 note that HACS installs the integration only — blueprints are always
 imported separately, that's a Home Assistant limitation).
 
+## Excess solar
+
+Devices with **use excess solar** enabled run whenever your site has surplus
+solar power, on top of their price schedule. The device's `should_run` sensor
+turns on if *either* a cheap-price window is active *or* there is enough solar
+excess — the two reasons are independent, and solar works even while cloud data
+is stale (it needs no cloud data at all).
+
+The configured power sensor is read **locally** in Home Assistant, so there is
+no cloud round-trip: EnergyOpt reacts to a change in surplus within about
+**60 s** (the same tick that re-evaluates schedule windows). Short cloud dips
+are smoothed by minimum on/off timers — defaults **10 min minimum on** and
+**5 min minimum off** — so the device doesn't flap as passing clouds cross the
+sun. Start/stop use asymmetric thresholds so a device that consumes its own
+surplus once running doesn't immediately switch itself back off.
+
+Extra attributes on the `should_run` sensor expose the current state:
+`solar_active` (solar is a reason the device is on now), `solar_excess_w`
+(signed surplus in watts, or null when the sensor has no reading), and
+`solar_hold_until` (when the active min-on/min-off timer expires).
+
 ## Offline behavior
 
 Entities keep working from the last fetched schedule during cloud outages:
