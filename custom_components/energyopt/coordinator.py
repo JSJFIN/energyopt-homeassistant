@@ -115,7 +115,7 @@ class EnergyOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         by the ``isinstance`` guards.
         """
         for device in data.get("devices", []):
-            for key in ("next_start", "next_end"):
+            for key in ("next_start", "next_end", "override_until"):
                 value = device.get(key)
                 if isinstance(value, str):
                     device[key] = dt_util.parse_datetime(value)

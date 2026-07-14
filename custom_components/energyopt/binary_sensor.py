@@ -288,6 +288,18 @@ class EnergyOptShouldRunBinarySensor(
         now = dt_util.now()
         payload_fallback = bool(device.get("is_fallback"))
 
+        # Precedence rung 1 (docs/solar_excess_spec.md): an active manual
+        # override beats schedule, solar, and fallback alike. Forced ON is
+        # already expressed as a synthetic schedule window; this guard is what
+        # makes forced OFF hold against solar.
+        override_until = device.get("override_until")
+        if (
+            device.get("override_state") in ("on", "off")
+            and isinstance(override_until, datetime)
+            and override_until > now
+        ):
+            return device.get("override_state") == "on", False
+
         # Disabled devices never run, sun or not (belt-and-suspenders: the
         # payload only carries this flag when the backend sends it).
         if device.get("enabled") is False:
