@@ -25,6 +25,7 @@ from .const import (
     STALE_MULTIPLIER,
     TICK_INTERVAL_SECONDS,
 )
+from .grid_guard import GridGuardDecision, GridPowerGuard
 from .price_cache import PriceCache
 from .solar import SolarConfig, SolarDecision, SolarState, evaluate_solar
 
@@ -47,6 +48,7 @@ class EnergyOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         api_key: str,
         site_id: str,
         poll_interval: int,
+        grid_guards: dict[str, Any] | None = None,
     ) -> None:
         """Initialize the coordinator."""
         super().__init__(
@@ -62,6 +64,9 @@ class EnergyOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.last_success_at: datetime | None = None
         self._unsub_ticker: Callable[[], None] | None = None
         self.prices = PriceCache(hass, self._base_url, site_id)
+        self.grid_guard = GridPowerGuard(
+            hass, self._base_url, site_id, grid_guards or {}, self.async_update_listeners
+        )
         self._price_task: asyncio.Task[None] | None = None
         self._unsub_price_retry: Callable[[], None] | None = None
         self._price_auth_failed = False
@@ -106,6 +111,10 @@ class EnergyOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             }
         self._start_ticker()
         self._schedule_price_retry()
+        await self.grid_guard.async_start()
+
+    def get_grid_guard(self, device_id: str) -> GridGuardDecision | None:
+        return self.grid_guard.decision(device_id)
 
     def _start_ticker(self) -> None:
         """Start a periodic tick so entities re-evaluate time-based state."""
@@ -133,11 +142,13 @@ class EnergyOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         cycle, on the first ``get_solar`` of the new generation.
         """
         self._eval_generation += 1
+        self.grid_guard.refresh()
         super().async_update_listeners()
 
     async def async_shutdown(self) -> None:
         """Cancel the ticker and shut down the coordinator."""
         self._shutting_down = True
+        await self.grid_guard.async_shutdown()
         if self._unsub_price_retry is not None:
             self._unsub_price_retry()
             self._unsub_price_retry = None

@@ -31,7 +31,15 @@
     }
   },
   "entity": {
+    "binary_sensor": {
+      "grid_power_blocked": {
+        "name": "Grid power blocked"
+      }
+    },
     "sensor": {
+      "grid_blocked_until": {
+        "name": "Grid blocked until"
+      },
       "price_data": {
         "name": "Price data"
       }
@@ -42,6 +50,14 @@
       }
     }
   },
+  "selector": {
+    "grid_import_direction": {
+      "options": {
+        "positive": "Positive means grid import",
+        "negative": "Negative means grid import"
+      }
+    }
+  },
   "options": {
     "step": {
       "init": {
@@ -49,9 +65,34 @@
         "description": "Adjust polling and which entities are created.",
         "data": {
           "poll_interval": "Poll interval (seconds)",
-          "enable_calendars": "Create schedule calendars"
+          "enable_calendars": "Create schedule calendars",
+          "configure_grid_guard": "Configure a device's grid-power guard"
+        }
+      },
+      "grid_device": {
+        "title": "Grid-power guard device",
+        "data": {
+          "device_id": "Device"
+        }
+      },
+      "grid_guard": {
+        "title": "Local grid-power guard",
+        "description": "When enabled, missing, invalid or stale readings block running. Select the import sign using a known grid-consumption reading. Update the switch-control blueprint and select the device's Grid power blocked sensor. This is supplementary load management, not fuse protection.",
+        "data": {
+          "enabled": "Enable grid-power guard",
+          "sensor": "Grid power sensor (W or kW)",
+          "stop_w": "Stop above",
+          "resume_w": "Resume at or below",
+          "pause_minutes": "Minimum pause",
+          "max_age_seconds": "Maximum reading age",
+          "import_direction": "Grid import direction"
         }
       }
+    },
+    "error": {
+      "no_devices": "No controllable devices are available. Check the site schedule first.",
+      "invalid_device": "Select a controllable EnergyOpt device.",
+      "invalid_grid_guard": "Select a power sensor, positive pause and reading-age durations, and a resume limit lower than the stop limit. All numbers must be finite."
     }
   }
 }

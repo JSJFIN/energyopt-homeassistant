@@ -13,6 +13,7 @@ from homeassistant.helpers import entity_registry as er
 from .const import (
     CONF_API_KEY,
     CONF_BASE_URL,
+    CONF_GRID_GUARDS,
     CONF_POLL_INTERVAL,
     CONF_SITE_ID,
     DEFAULT_POLL_INTERVAL,
@@ -46,6 +47,7 @@ async def async_setup_entry(
         api_key=entry.data[CONF_API_KEY],
         site_id=entry.data[CONF_SITE_ID],
         poll_interval=poll_interval,
+        grid_guards=entry.options.get(CONF_GRID_GUARDS, {}),
     )
 
     await coordinator.async_config_entry_first_refresh()
@@ -81,6 +83,8 @@ _DEVICE_ENTITY_KEYS = (
     "reason",
     "estimated_cost",
     "calendar",
+    "grid_power_blocked",
+    "grid_blocked_until",
 )
 
 

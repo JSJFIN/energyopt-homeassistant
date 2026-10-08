@@ -39,6 +39,13 @@ class EnergyOptSiteSensorDescription(SensorEntityDescription):
 
 DEVICE_SENSORS: tuple[EnergyOptDeviceSensorDescription, ...] = (
     EnergyOptDeviceSensorDescription(
+        key="grid_blocked_until",
+        translation_key="grid_blocked_until",
+        name="Grid blocked until",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        value_fn=lambda device: None,
+    ),
+    EnergyOptDeviceSensorDescription(
         key="next_start",
         translation_key="next_start",
         # "begins/ends" (not "start/end") so alphabetical entity lists show
@@ -240,6 +247,9 @@ class EnergyOptDeviceSensor(
         device = self._get_device()
         if device is None:
             return None
+        if self.entity_description.key == "grid_blocked_until":
+            guard = self.coordinator.get_grid_guard(self._device_id)
+            return guard.blocked_until if guard else None
         if self.entity_description.key == "reason":
             return self._compose_reason(device)
         return self.entity_description.value_fn(device)
@@ -254,6 +264,9 @@ class EnergyOptDeviceSensor(
           excess solar").
         """
         server_reason = device.get("reason")
+        guard = self.coordinator.get_grid_guard(self._device_id)
+        if guard is not None and guard.blocked:
+            return guard.reason
         solar = self.coordinator.get_solar(device)
         if solar is None or not solar.solar_on:
             return server_reason

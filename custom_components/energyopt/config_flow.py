@@ -6,7 +6,6 @@ from typing import Any
 
 import aiohttp
 import voluptuous as vol
-
 from homeassistant.config_entries import (
     ConfigEntry,
     ConfigFlow,
@@ -16,6 +15,13 @@ from homeassistant.config_entries import (
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
+    EntitySelector,
+    EntitySelectorConfig,
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
+    SelectSelector,
+    SelectSelectorConfig,
     TextSelector,
     TextSelectorConfig,
     TextSelectorType,
@@ -23,15 +29,18 @@ from homeassistant.helpers.selector import (
 
 from .const import (
     CONF_API_KEY,
-    CONF_ENABLE_CALENDARS,
     CONF_BASE_URL,
+    CONF_ENABLE_CALENDARS,
+    CONF_GRID_GUARDS,
     CONF_POLL_INTERVAL,
     CONF_SITE_ID,
     DEFAULT_BASE_URL,
     DEFAULT_POLL_INTERVAL,
     DEFAULT_SITE_ID,
     DOMAIN,
+    SELF_CONTROLLED_TYPES,
 )
+from .grid_guard import GridGuardConfig
 
 REQUEST_TIMEOUT = 30
 
@@ -197,9 +206,21 @@ class EnergyOptOptionsFlow(OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Manage the poll interval."""
+        """Manage polling, calendars, and optional per-device grid guards."""
+        errors = {}
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            self._options = dict(self.config_entry.options)
+            self._options.update(
+                {
+                    CONF_POLL_INTERVAL: user_input[CONF_POLL_INTERVAL],
+                    CONF_ENABLE_CALENDARS: user_input[CONF_ENABLE_CALENDARS],
+                }
+            )
+            if not user_input.get("configure_grid_guard"):
+                return self.async_create_entry(title="", data=self._options)
+            if self._devices():
+                return await self.async_step_grid_device()
+            errors["base"] = "no_devices"
 
         current = self.config_entry.options.get(
             CONF_POLL_INTERVAL,
@@ -212,6 +233,109 @@ class EnergyOptOptionsFlow(OptionsFlow):
                     vol.Coerce(int), vol.Range(min=30)
                 ),
                 vol.Required(CONF_ENABLE_CALENDARS, default=calendars): bool,
+                vol.Required("configure_grid_guard", default=False): bool,
             }
         )
-        return self.async_show_form(step_id="init", data_schema=data_schema)
+        return self.async_show_form(
+            step_id="init", data_schema=data_schema, errors=errors
+        )
+
+    def _devices(self) -> dict[str, str]:
+        coordinator = getattr(self.config_entry, "runtime_data", None)
+        data = coordinator.data if coordinator is not None else {}
+        devices = {
+            device["id"]: device.get("name") or device["id"]
+            for device in (data or {}).get("devices", [])
+            if device.get("id") and device.get("type") not in SELF_CONTROLLED_TYPES
+        }
+        for device_id in self.config_entry.options.get(CONF_GRID_GUARDS, {}):
+            devices.setdefault(device_id, device_id)
+        return devices
+
+    async def async_step_grid_device(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        devices = self._devices()
+        if user_input is not None and user_input["device_id"] in devices:
+            self._device_id = user_input["device_id"]
+            return await self.async_step_grid_guard()
+        return self.async_show_form(
+            step_id="grid_device",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("device_id"): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[
+                                {"value": key, "label": name}
+                                for key, name in devices.items()
+                            ],
+                        )
+                    ),
+                }
+            ),
+            errors={"base": "invalid_device"} if user_input is not None else {},
+        )
+
+    async def async_step_grid_guard(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        guards = dict(self._options.get(CONF_GRID_GUARDS, {}))
+        current = guards.get(self._device_id, {})
+        errors = {}
+        if user_input is not None:
+            if not user_input["enabled"]:
+                guards.pop(self._device_id, None)
+            else:
+                settings = {
+                    key: value for key, value in user_input.items() if key != "enabled"
+                }
+                try:
+                    GridGuardConfig(**settings)
+                except (TypeError, ValueError):
+                    errors["base"] = "invalid_grid_guard"
+                else:
+                    guards[self._device_id] = settings
+            if not errors:
+                self._options[CONF_GRID_GUARDS] = guards
+                return self.async_create_entry(title="", data=self._options)
+        defaults = {
+            "enabled": bool(current),
+            "stop_w": 16000,
+            "resume_w": 14000,
+            "pause_minutes": 10,
+            "max_age_seconds": 120,
+            "import_direction": "positive",
+            **current,
+            **(user_input or {}),
+        }
+        schema = {vol.Required("enabled", default=defaults["enabled"]): bool}
+        sensor_key = (
+            vol.Optional("sensor", default=defaults["sensor"])
+            if "sensor" in defaults
+            else vol.Optional("sensor")
+        )
+        schema[sensor_key] = EntitySelector(EntitySelectorConfig(domain="sensor"))
+        for key, minimum, unit in (
+            ("stop_w", 1, "W"),
+            ("resume_w", 0, "W"),
+            ("pause_minutes", 1, "min"),
+            ("max_age_seconds", 1, "s"),
+        ):
+            schema[vol.Required(key, default=defaults[key])] = NumberSelector(
+                NumberSelectorConfig(
+                    min=minimum, mode=NumberSelectorMode.BOX, unit_of_measurement=unit
+                )
+            )
+        schema[
+            vol.Required("import_direction", default=defaults["import_direction"])
+        ] = SelectSelector(
+            SelectSelectorConfig(
+                options=["positive", "negative"],
+                translation_key="grid_import_direction",
+            )
+        )
+        return self.async_show_form(
+            step_id="grid_guard",
+            data_schema=vol.Schema(schema),
+            errors=errors,
+        )

@@ -70,9 +70,12 @@ SITE_BINARY_SENSORS: tuple[EnergyOptSiteBinarySensorDescription, ...] = (
 
 def _build_device_entities(
     coordinator: EnergyOptCoordinator, entry_id: str, device_id: str
-) -> list[EnergyOptShouldRunBinarySensor]:
+) -> list[BinarySensorEntity]:
     """Build the binary sensor entities for a single device."""
-    return [EnergyOptShouldRunBinarySensor(coordinator, entry_id, device_id)]
+    return [
+        EnergyOptShouldRunBinarySensor(coordinator, entry_id, device_id),
+        EnergyOptGridPowerBlockedBinarySensor(coordinator, entry_id, device_id),
+    ]
 
 
 async def async_setup_entry(
@@ -105,7 +108,7 @@ async def async_setup_entry(
         # Forget departed ids so a removed-then-readded device is recreated.
         known_ids.intersection_update(current_ids)
 
-        new_entities: list[EnergyOptShouldRunBinarySensor] = []
+        new_entities: list[BinarySensorEntity] = []
         for device in devices:
             if not isinstance(device, dict):
                 continue
@@ -188,11 +191,14 @@ class EnergyOptShouldRunBinarySensor(
     def _evaluate(self, device: dict[str, Any]) -> tuple[bool, bool]:
         """Compute (should_run, is_fallback) locally from the retained data.
 
-        Precedence ladder (solar_excess_spec.md §1): override; disabled → off;
-        schedule_on OR solar_on → on; else fallback.
+        Local grid protection always wins. Otherwise the precedence ladder
+        remains override; disabled -> off; schedule OR solar; else fallback.
         """
         now = dt_util.now()
         payload_fallback = bool(device.get("is_fallback"))
+        guard = self.coordinator.get_grid_guard(self._device_id)
+        if guard is not None and guard.blocked:
+            return False, False
 
         # Precedence rung 1 (docs/solar_excess_spec.md): an active manual
         # override beats schedule, solar, and fallback alike. Forced ON is
@@ -267,6 +273,7 @@ class EnergyOptShouldRunBinarySensor(
         device = self._get_device() or {}
         final_on, is_fallback = self._evaluate(device) if device else (False, False)
         solar = self.coordinator.get_solar(device) if device else None
+        guard = self.coordinator.get_grid_guard(self._device_id)
         override_until = device.get("override_until")
         override_active = (
             device.get("override_state") in ("on", "off")
@@ -278,6 +285,11 @@ class EnergyOptShouldRunBinarySensor(
             price_schedule = []
         return {
             "device_id": device.get("id"),
+            "grid_guard_enabled": guard is not None,
+            "grid_power_blocked": guard.blocked if guard else False,
+            "grid_blocked_until": guard.blocked_until if guard else None,
+            "grid_import_w": guard.import_w if guard else None,
+            "grid_guard_reason": guard.reason if guard else None,
             "device_name": device.get("name"),
             "reason": device.get("reason"),
             "next_start": device.get("next_start"),
@@ -299,6 +311,33 @@ class EnergyOptShouldRunBinarySensor(
             "solar_reason": self.coordinator.solar_reason(device, final_on)
             if device
             else None,
+        }
+
+
+class EnergyOptGridPowerBlockedBinarySensor(EnergyOptShouldRunBinarySensor):
+    """Explicit block sensor also lets blueprints fail closed during reloads."""
+
+    _attr_name = "Grid power blocked"
+    _attr_icon = "mdi:flash-alert"
+    _attr_translation_key = "grid_power_blocked"
+
+    def __init__(self, coordinator: EnergyOptCoordinator, entry_id: str, device_id: str) -> None:
+        super().__init__(coordinator, entry_id, device_id)
+        self._attr_unique_id = f"{entry_id}_{device_id}_grid_power_blocked"
+
+    @property
+    def is_on(self) -> bool:
+        guard = self.coordinator.get_grid_guard(self._device_id)
+        return bool(guard and guard.blocked)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        guard = self.coordinator.get_grid_guard(self._device_id)
+        return {
+            "enabled": guard is not None,
+            "blocked_until": guard.blocked_until if guard else None,
+            "grid_import_w": guard.import_w if guard else None,
+            "reason": guard.reason if guard else None,
         }
 
 

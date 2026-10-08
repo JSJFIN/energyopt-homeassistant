@@ -3,7 +3,9 @@ blueprint:
   description: >
     Turn a switch on or off based on an EnergyOpt "should run" binary sensor.
     Optionally boost until the next cheap period, pause automatic control,
-    and honour a minimum on time. Boost requires EnergyOpt 0.4.3 or newer.
+    and honour a minimum on time. An optional local grid-power guard always
+    takes priority, including over pause and minimum on time. Boost requires
+    EnergyOpt 0.4.3 or newer; grid protection requires 0.4.5 or newer.
   domain: automation
   source_url: https://github.com/JSJFIN/energyopt-homeassistant/blob/main/blueprints/automation/energyopt/control_switch_from_schedule.yaml
   input:
@@ -69,6 +71,20 @@ blueprint:
         seconds: 0
       selector:
         duration: {}
+    grid_power_guard_sensor:
+      name: Grid power blocked sensor (optional)
+      description: >
+        Select this device's EnergyOpt "Grid power blocked" binary sensor
+        after configuring its guard in the integration options. Selecting
+        it also stops the device when that sensor is unavailable, including
+        during startup or reload. The guard overrides boost, pause, and
+        minimum on time. Leave empty for no explicit block sensor; guard
+        attributes on Should run are still respected automatically.
+      default: []
+      selector:
+        entity:
+          filter:
+            domain: binary_sensor
 
 mode: restart
 
@@ -76,6 +92,21 @@ trigger_variables:
   manual_override_entity: !input manual_override
 
 trigger:
+  - platform: state
+    entity_id: !input grid_power_guard_sensor
+    id: grid_guard_changed
+  - platform: state
+    entity_id: !input should_run_sensor
+    attribute: grid_power_blocked
+    id: grid_guard_changed
+  - platform: state
+    entity_id: !input should_run_sensor
+    attribute: grid_guard_enabled
+    id: grid_guard_changed
+  - platform: state
+    entity_id: !input target_switch
+    to: "on"
+    id: target_on
   - platform: state
     entity_id: !input should_run_sensor
     to: "on"
@@ -126,6 +157,12 @@ variables:
   boost_entity: !input boost
   boost_expiry_entity: !input boost_expiry
   minimum_on_duration: !input minimum_on_time
+  grid_guard_entity: !input grid_power_guard_sensor
+  grid_power_blocked: >
+    {{ (grid_guard_entity is string and grid_guard_entity != ''
+        and not is_state(grid_guard_entity, 'off'))
+       or (state_attr(should_run_entity, 'grid_guard_enabled') == true
+           and state_attr(should_run_entity, 'grid_power_blocked') != false) }}
   boost_ready: >
     {{ boost_entity is string and boost_entity != ''
        and boost_entity != target_entity
@@ -167,6 +204,9 @@ variables:
     {{ ns.next }}
 
 action:
+  - if: "{{ trigger is defined and trigger.id == 'target_on' and not grid_power_blocked }}"
+    then:
+      - stop: Target changes only reconcile immediately when safety blocks running.
   # Maintain the deadline even while switching is paused. Conditions belong
   # in the actions so a pause/boost change also cancels a pending OFF delay.
   - choose:
@@ -215,6 +255,14 @@ action:
                       entity_id: "{{ boost_expiry_entity }}"
                     data:
                       timestamp: "{{ deadline }}"
+  - if: "{{ grid_power_blocked }}"
+    then:
+      - if: "{{ is_state(target_entity, 'on') }}"
+        then:
+          - service: homeassistant.turn_off
+            target:
+              entity_id: !input target_switch
+      - stop: Grid-power safety block overrides all run requests.
   - condition: template
     value_template: >
       {{ manual_override_entity == none
@@ -231,6 +279,12 @@ action:
             value_template: >
               {{ boost_active or scheduled_now or is_state(should_run_entity, 'on') }}
         sequence:
+          - condition: template
+            value_template: >
+              {{ not (grid_guard_entity is string and grid_guard_entity != ''
+                      and not is_state(grid_guard_entity, 'off'))
+                 and not (state_attr(should_run_entity, 'grid_guard_enabled') == true
+                          and state_attr(should_run_entity, 'grid_power_blocked') != false) }}
           - if: "{{ not is_state(target_entity, 'on') }}"
             then:
               - service: homeassistant.turn_on

@@ -18,6 +18,8 @@ Per device:
 - `sensor.<device>_reason` — plain-language explanation
   ("Next cheap window 01:00–03:00 tomorrow.")
 - `sensor.<device>_estimated_cost` — EUR for the next run
+- `binary_sensor.<device>_grid_power_blocked` — local grid-power safety block
+- `sensor.<device>_grid_blocked_until` — earliest end of an overload pause
 - `calendar.<device>_schedule` — upcoming run windows as calendar events
 
 Site-level:
@@ -174,6 +176,76 @@ python3 -m venv /tmp/energyopt-ha-tests
 /tmp/energyopt-ha-tests/bin/pip install -r homeassistant/tests/requirements.txt
 /tmp/energyopt-ha-tests/bin/pytest homeassistant/tests
 ```
+
+## Optional grid-power guard
+
+Requires integration **0.4.5 or newer** and the updated switch-control
+blueprint. This is local load management; no backend update or additional
+EnergyOpt API requests are needed. Guards are disabled by default.
+
+For example, stop car charging when total grid import exceeds **16,000 W**
+and keep it stopped for at least **10 minutes**:
+
+1. Update EnergyOpt through HACS, restart HA, and **re-import the blueprint**.
+2. Open **Settings → Devices & services → EnergyOpt → Configure**. Select
+   **Configure a device's grid-power guard**, then select your car.
+3. Enable the guard and select your power sensor, for example
+   `sensor.power_grid_fronius_power_flow_0_http_192_168_1_50`.
+4. Set **Stop above** to `16000 W`, **Resume at or below** to `14000 W`, and
+   **Minimum pause** to your desired number of minutes. Set the maximum
+   reading age longer than the sensor's normal reporting interval (default
+   `120 seconds`). Check the sign during known grid consumption and select
+   positive or negative import accordingly. W and kW sensors are supported;
+   exported power never counts as imported power.
+5. Edit the device's blueprint automation. Select its **Grid power blocked**
+   entity in the new optional input. This also blocks the target while the
+   integration's block sensor is unavailable during startup or reload.
+   Use the charger's supported charging-enable switch, not an arbitrary
+   upstream power switch.
+
+The integration monitors local power reports and updates **Should run**
+immediately when import rises strictly above the stop limit. The blueprint
+switches the target off without waiting for minimum-on time. Safety takes
+priority over price windows, solar, fallback, cloud overrides, local boost,
+and **Pause automatic control**. Even manually turning the target on while
+blocked causes the blueprint to turn it off again.
+
+The pause deadline is persisted locally. Repeated high readings never slide
+it forward, and a power drop never ends the minimum pause early. Once the
+deadline passes, the device remains blocked until import is at or below the
+resume limit. Thus **Grid blocked until** is the earliest release time, not
+a promise to restart then. Restarting HA or reloading the integration keeps
+the deadline and the overload latch, including after the deadline passes.
+
+After release, normal control resumes only if the schedule, solar, fallback,
+or a still-active boost requests running. Boost still expires at its original
+cheap-price boundary while blocked. If charging causes another overload,
+a new minimum pause starts. The resume threshold reduces cycling but does
+not guarantee headroom for the charger's full load. Multiple protected devices
+have independent pause durations; this is not a coordinated priority-based
+load allocator.
+
+Missing, invalid, restored-only, or stale readings block running. Fresh valid
+readings allow recovery only after any outstanding pause and the resume
+threshold are satisfied. Unchanged sensor reports still refresh reading age.
+If cooldown storage is corrupt, the guard applies a fresh minimum pause.
+
+Put **Grid power blocked**, **Grid blocked until**, and the device's **Reason**
+sensor on your dashboard. The should-run sensor also exposes
+`grid_guard_enabled`, `grid_power_blocked`, `grid_blocked_until`,
+`grid_import_w`, and `grid_guard_reason`. The updated blueprint respects these
+attributes automatically, but selecting the explicit block sensor is
+recommended for fail-closed startup/reload behavior. No helpers are required.
+
+Disable a guard by revisiting the same per-device options and clearing
+**Enable grid-power guard**. Editing polling/calendar options preserves all
+existing guards. With protection disabled, existing control behavior is
+unchanged.
+
+**This is not fuse protection.** It depends on HA, source reporting, and the
+charger accepting commands; it cannot react while HA is stopped or protect
+individual overloaded phases using only a total-power sensor. Retain the
+charger's hardware limits and electrical protection.
 
 ## Excess solar
 

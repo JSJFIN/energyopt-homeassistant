@@ -7,6 +7,7 @@ CONF_API_KEY = "api_key"
 CONF_SITE_ID = "site_id"
 CONF_POLL_INTERVAL = "poll_interval"
 CONF_ENABLE_CALENDARS = "enable_calendars"
+CONF_GRID_GUARDS = "grid_guards"
 
 DEFAULT_BASE_URL = "https://energyopt.ailabra.org"
 DEFAULT_SITE_ID = "demo"
