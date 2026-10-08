@@ -188,9 +188,8 @@ class EnergyOptShouldRunBinarySensor(
     def _evaluate(self, device: dict[str, Any]) -> tuple[bool, bool]:
         """Compute (should_run, is_fallback) locally from the retained data.
 
-        Precedence ladder (solar_excess_spec.md §1): disabled → off; else
-        schedule_on OR solar_on → on; else fallback. Manual override is not yet
-        sourced in this integration and is intentionally omitted.
+        Precedence ladder (solar_excess_spec.md §1): override; disabled → off;
+        schedule_on OR solar_on → on; else fallback.
         """
         now = dt_util.now()
         payload_fallback = bool(device.get("is_fallback"))
@@ -268,6 +267,15 @@ class EnergyOptShouldRunBinarySensor(
         device = self._get_device() or {}
         final_on, is_fallback = self._evaluate(device) if device else (False, False)
         solar = self.coordinator.get_solar(device) if device else None
+        override_until = device.get("override_until")
+        override_active = (
+            device.get("override_state") in ("on", "off")
+            and isinstance(override_until, datetime)
+            and override_until > dt_util.now()
+        )
+        price_schedule = device.get("schedule") or []
+        if device.get("is_fallback") or override_active or device.get("enabled") is False:
+            price_schedule = []
         return {
             "device_id": device.get("id"),
             "device_name": device.get("name"),
@@ -276,6 +284,9 @@ class EnergyOptShouldRunBinarySensor(
             "next_end": device.get("next_end"),
             "estimated_cost_eur": device.get("estimated_cost_eur"),
             "schedule": device.get("schedule"),
+            # Boost must reset at a price window, never a solar/fallback window
+            # or the synthetic window emitted for a cloud manual override.
+            "price_schedule": price_schedule,
             "server_should_run": device.get("should_run_now"),
             "is_fallback": is_fallback,
             "last_success": self.coordinator.last_success_at,

@@ -57,13 +57,60 @@ Manual install: copy `custom_components/energyopt` into your HA
 
 [`control_switch_from_schedule.yaml`](blueprints/automation/energyopt/control_switch_from_schedule.yaml)
 turns a switch (or input_boolean) on/off following the should-run sensor,
-with an optional manual override and minimum on-time. One-click import:
+with optional boost, pause, and minimum on-time. One-click import:
 
 [![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fraw.githubusercontent.com%2FJSJFIN%2Fenergyopt-homeassistant%2Fmain%2Fblueprints%2Fautomation%2Fenergyopt%2Fcontrol_switch_from_schedule.yaml)
 
 (or paste the raw file URL into Settings → Automations → Blueprints → Import;
 note that HACS installs the integration only — blueprints are always
 imported separately, that's a Home Assistant limitation).
+
+### Boost until the next cheap period
+
+For extra hot water before guests or sauna, turn on **Boost**: the device
+runs immediately, even outside its cheap hours. At the next scheduled cheap
+period, the boost toggle resets to off and normal control resumes. The device
+stays on during that cheap period and turns off normally afterward.
+
+Requires integration **0.4.3 or newer** and the updated blueprint. For each
+device, create two helpers in **Settings → Devices & services → Helpers**:
+
+1. A **Toggle**, for example `input_boolean.water_heater_boost`.
+2. A **Date and/or time** helper with **both date and time** enabled, for
+   example `input_datetime.water_heater_boost_expires`.
+
+Select them in the automation's **Boost until next cheap period** and
+**Boost expires at** inputs. Put the toggle and expiry helper on your dashboard.
+Use separate helpers for every device, and do not set YAML `initial` values:
+Home Assistant needs to restore their saved states after a restart.
+
+The expiry is saved when boost starts. A newly published earlier cheap period
+can shorten it; changes never extend it automatically. With no known cheap
+period, boost expires after **four hours**. Solar and fallback activity do not
+reset boost. Turning the toggle off cancels boost and resumes normal control.
+If the schedule sensor is unavailable when boost ends, the device switches
+off immediately instead of remaining forced on.
+Starting boost during a cheap period immediately clears the toggle, because
+normal control is already running the device.
+
+**Pause automatic control** is the former manual-override input: it leaves
+the switch untouched and takes priority over boost. Boost still expires while
+paused. Clearing pause immediately reconciles the switch. Minimum on-time is
+measured from when the switch actually turned on; boost cancels a pending OFF.
+
+To update an existing installation, update EnergyOpt through HACS and restart
+Home Assistant, then **re-import the blueprint** in Settings → Automations &
+scenes → Blueprints. Edit the existing automation to select the new helpers.
+Existing automations without boost helpers continue to follow their sensor.
+
+Blueprint regression tests use a separate Home Assistant runtime. Run these
+commands from the [energyopt monorepo](https://github.com/JSJFIN/energyopt) root:
+
+```sh
+python3 -m venv /tmp/energyopt-ha-tests
+/tmp/energyopt-ha-tests/bin/pip install -r homeassistant/tests/requirements.txt
+/tmp/energyopt-ha-tests/bin/pytest homeassistant/tests
+```
 
 ## Excess solar
 

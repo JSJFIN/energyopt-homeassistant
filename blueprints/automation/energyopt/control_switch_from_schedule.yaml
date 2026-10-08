@@ -2,7 +2,8 @@ blueprint:
   name: EnergyOpt - Control switch from schedule
   description: >
     Turn a switch on or off based on an EnergyOpt "should run" binary sensor.
-    Optionally honour a manual override boolean and a minimum on time.
+    Optionally boost until the next cheap period, pause automatic control,
+    and honour a minimum on time. Boost requires EnergyOpt 0.4.3 or newer.
   domain: automation
   source_url: https://github.com/JSJFIN/energyopt-homeassistant/blob/main/blueprints/automation/energyopt/control_switch_from_schedule.yaml
   input:
@@ -25,7 +26,7 @@ blueprint:
               - switch
               - input_boolean
     manual_override:
-      name: Manual override (optional)
+      name: Pause automatic control (optional)
       description: >
         If this input_boolean is on, the automation does nothing. Leave empty
         to disable the override.
@@ -34,6 +35,29 @@ blueprint:
         entity:
           filter:
             domain: input_boolean
+    boost:
+      name: Boost until next cheap period (optional)
+      description: >
+        A separate input_boolean helper. Turn it on to force the device on
+        until the next scheduled cheap period starts. It then resets to off
+        and normal control resumes. Without a known cheap period, boost lasts
+        four hours. Leave empty to disable boost.
+      default: []
+      selector:
+        entity:
+          filter:
+            domain: input_boolean
+    boost_expiry:
+      name: Boost expires at (optional)
+      description: >
+        An input_datetime helper with BOTH date and time enabled. Required
+        when boost is selected. Use a separate helper for each device; the
+        automation saves the deadline here so it survives restarts.
+      default: []
+      selector:
+        entity:
+          filter:
+            domain: input_datetime
     minimum_on_time:
       name: Minimum on time (optional)
       description: >
@@ -48,6 +72,9 @@ blueprint:
 
 mode: restart
 
+trigger_variables:
+  manual_override_entity: !input manual_override
+
 trigger:
   - platform: state
     entity_id: !input should_run_sensor
@@ -57,31 +84,188 @@ trigger:
     entity_id: !input should_run_sensor
     to: "off"
     id: should_run_off
+  - platform: state
+    entity_id: !input should_run_sensor
+    attribute: price_schedule
+    id: schedule_changed
+  - platform: state
+    entity_id: !input boost
+    to: "on"
+    id: boost_on
+  - platform: state
+    entity_id: !input boost
+    to: "off"
+    id: boost_off
+  - platform: time
+    at: !input boost_expiry
+    id: boost_expired
+  - platform: template
+    value_template: >
+      {{ manual_override_entity != ''
+         and is_state(manual_override_entity, 'on') }}
+    id: paused
+  - platform: template
+    value_template: >
+      {{ manual_override_entity != ''
+         and is_state(manual_override_entity, 'off') }}
+    id: resumed
+  - platform: homeassistant
+    event: start
+    id: startup
+  - platform: event
+    event_type: automation_reloaded
+    id: reloaded
+  - platform: time_pattern
+    minutes: "/1"
+    id: reconcile
 
 variables:
+  should_run_entity: !input should_run_sensor
+  target_entity: !input target_switch
   manual_override_entity: !input manual_override
+  boost_entity: !input boost
+  boost_expiry_entity: !input boost_expiry
+  minimum_on_duration: !input minimum_on_time
+  boost_ready: >
+    {{ boost_entity is string and boost_entity != ''
+       and boost_entity != target_entity
+       and boost_entity != manual_override_entity
+       and boost_expiry_entity is string and boost_expiry_entity != ''
+       and state_attr(boost_expiry_entity, 'has_date') == true
+       and state_attr(boost_expiry_entity, 'has_time') == true
+       and states(boost_expiry_entity) not in ['unknown', 'unavailable']
+       and state_attr(should_run_entity, 'price_schedule') is not none }}
+  saved_expiry: >
+    {{ state_attr(boost_expiry_entity, 'timestamp') | float(0)
+       if boost_expiry_entity is string else 0 }}
+  new_boost: >
+    {{ trigger is defined and trigger.id == 'boost_on'
+       and trigger.from_state is not none
+       and trigger.from_state.state == 'off' }}
+  boost_finished: >
+    {{ trigger is defined and trigger.id == 'boost_off'
+       and trigger.from_state is not none
+       and trigger.from_state.state == 'on' }}
+  scheduled_now: >
+    {% set ns = namespace(active=false) %}
+    {% set ts = as_timestamp(now()) %}
+    {% for window in state_attr(should_run_entity, 'price_schedule') or [] %}
+      {% set start = as_timestamp(window.start, 0) %}
+      {% set end = as_timestamp(window.end, 0) %}
+      {% if start <= ts < end %}{% set ns.active = true %}{% endif %}
+    {% endfor %}
+    {{ ns.active }}
+  next_cheap_start: >
+    {% set ns = namespace(next=0) %}
+    {% set ts = as_timestamp(now()) %}
+    {% for window in state_attr(should_run_entity, 'price_schedule') or [] %}
+      {% set start = as_timestamp(window.start, 0) %}
+      {% if start > ts and (ns.next == 0 or start < ns.next) %}
+        {% set ns.next = start %}
+      {% endif %}
+    {% endfor %}
+    {{ ns.next }}
 
-condition:
+action:
+  # Maintain the deadline even while switching is paused. Conditions belong
+  # in the actions so a pause/boost change also cancels a pending OFF delay.
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ boost_entity is string and is_state(boost_entity, 'on') }}
+        sequence:
+          - choose:
+              - conditions: "{{ not boost_ready }}"
+                sequence:
+                  - service: persistent_notification.create
+                    data:
+                      notification_id: "energyopt_boost_{{ boost_entity | replace('.', '_') }}"
+                      title: EnergyOpt boost needs configuration
+                      message: >
+                        Select a separate boost toggle and a date-and-time
+                        expiry helper, and update EnergyOpt to 0.4.3 or newer.
+                        Boost was cancelled; automatic control still follows
+                        the should-run sensor.
+                  - service: input_boolean.turn_off
+                    target:
+                      entity_id: "{{ boost_entity }}"
+              - conditions: >
+                  {{ scheduled_now or
+                     (not new_boost and saved_expiry > 0
+                      and saved_expiry <= as_timestamp(now())) }}
+                sequence:
+                  - service: input_boolean.turn_off
+                    target:
+                      entity_id: "{{ boost_entity }}"
+            default:
+              - variables:
+                  deadline: >
+                    {% if new_boost or saved_expiry <= 0 %}
+                      {{ next_cheap_start if next_cheap_start > 0
+                         else (as_timestamp(now()) + 4 * 3600) | int }}
+                    {% else %}
+                      {{ [saved_expiry, next_cheap_start] | min
+                         if next_cheap_start > 0 else saved_expiry }}
+                    {% endif %}
+              - if: "{{ deadline != saved_expiry }}"
+                then:
+                  - service: input_datetime.set_datetime
+                    target:
+                      entity_id: "{{ boost_expiry_entity }}"
+                    data:
+                      timestamp: "{{ deadline }}"
   - condition: template
     value_template: >
       {{ manual_override_entity == none
          or manual_override_entity == ''
          or is_state(manual_override_entity, 'off') }}
-
-action:
+  - variables:
+      boost_active: >
+        {{ boost_ready and is_state(boost_entity, 'on')
+           and state_attr(boost_expiry_entity, 'timestamp') | float(0)
+               > as_timestamp(now()) }}
   - choose:
       - conditions:
-          - condition: trigger
-            id: should_run_on
+          - condition: template
+            value_template: >
+              {{ boost_active or scheduled_now or is_state(should_run_entity, 'on') }}
         sequence:
-          - service: homeassistant.turn_on
-            target:
-              entity_id: !input target_switch
-      - conditions:
-          - condition: trigger
-            id: should_run_off
+          - if: "{{ not is_state(target_entity, 'on') }}"
+            then:
+              - service: homeassistant.turn_on
+                target:
+                  entity_id: !input target_switch
+      - conditions: >
+          {{ (is_state(should_run_entity, 'off') or boost_finished)
+             and is_state(target_entity, 'on') }}
         sequence:
-          - delay: !input minimum_on_time
+          - variables:
+              remaining_on_seconds: >
+                {% set duration = minimum_on_duration %}
+                {% set seconds = duration.get('hours', 0) * 3600
+                   + duration.get('minutes', 0) * 60 + duration.get('seconds', 0) %}
+                {{ 0 if boost_finished and not is_state(should_run_entity, 'off')
+                   else [0, seconds - (as_timestamp(now())
+                         - as_timestamp(states[target_entity].last_changed))] | max }}
+          - delay:
+              seconds: "{{ remaining_on_seconds }}"
+          # Re-check live intent after the delay, including a price boundary
+          # that may precede the binary sensor's next local tick.
+          - condition: template
+            value_template: >
+              {% set ns = namespace(scheduled=false) %}
+              {% set ts = as_timestamp(now()) %}
+              {% for window in state_attr(should_run_entity, 'price_schedule') or [] %}
+                {% if as_timestamp(window.start, 0) <= ts < as_timestamp(window.end, 0) %}
+                  {% set ns.scheduled = true %}
+                {% endif %}
+              {% endfor %}
+              {{ not ns.scheduled and not is_state(should_run_entity, 'on')
+                 and (is_state(should_run_entity, 'off') or boost_finished)
+                 and (boost_entity is not string or not is_state(boost_entity, 'on'))
+                 and (manual_override_entity == none or manual_override_entity == ''
+                      or is_state(manual_override_entity, 'off')) }}
           - service: homeassistant.turn_off
             target:
               entity_id: !input target_switch
