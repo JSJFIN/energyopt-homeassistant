@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta
-import logging
 from typing import Any
 
 import aiohttp
-
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.event import (
+    async_track_point_in_utc_time,
+    async_track_time_interval,
+)
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
@@ -21,6 +25,7 @@ from .const import (
     STALE_MULTIPLIER,
     TICK_INTERVAL_SECONDS,
 )
+from .price_cache import PriceCache
 from .solar import SolarConfig, SolarDecision, SolarState, evaluate_solar
 
 _LOGGER = logging.getLogger(__name__)
@@ -56,6 +61,12 @@ class EnergyOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._session = async_get_clientsession(hass)
         self.last_success_at: datetime | None = None
         self._unsub_ticker: Callable[[], None] | None = None
+        self.prices = PriceCache(hass, self._base_url, site_id)
+        self._price_task: asyncio.Task[None] | None = None
+        self._unsub_price_retry: Callable[[], None] | None = None
+        self._price_auth_failed = False
+        self._manual_price_refresh_at: datetime | None = None
+        self._shutting_down = False
         # Solar ownership lives here (see solar_excess_spec.md): the coordinator
         # is the single evaluator. ``_solar_states`` is per-device persistent
         # memory (lost on restart); ``_solar_cache`` is a per-cycle decision
@@ -81,8 +92,20 @@ class EnergyOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def async_config_entry_first_refresh(self) -> None:
         """Do the first refresh, then start the between-poll ticker."""
-        await super().async_config_entry_first_refresh()
+        await self.prices.async_load()
+        try:
+            await super().async_config_entry_first_refresh()
+        except ConfigEntryNotReady:
+            if not self.prices.loaded:
+                raise
+            # Cached prices remain usable while the schedule API is offline.
+            # Keep last_update_success=False; price-only data is not a schedule.
+            self.data = {
+                "site_id": self._site_id, "timezone": self.prices.timezone,
+                "devices": [], "status": "stale",
+            }
         self._start_ticker()
+        self._schedule_price_retry()
 
     def _start_ticker(self) -> None:
         """Start a periodic tick so entities re-evaluate time-based state."""
@@ -114,6 +137,13 @@ class EnergyOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def async_shutdown(self) -> None:
         """Cancel the ticker and shut down the coordinator."""
+        self._shutting_down = True
+        if self._unsub_price_retry is not None:
+            self._unsub_price_retry()
+            self._unsub_price_retry = None
+        if self._price_task is not None:
+            self._price_task.cancel()
+            await asyncio.gather(self._price_task, return_exceptions=True)
         if self._unsub_ticker is not None:
             self._unsub_ticker()
             self._unsub_ticker = None
@@ -137,7 +167,99 @@ class EnergyOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         parsed = self._parse(data)
         self.last_success_at = dt_util.utcnow()
+        try:
+            self.prices.observe(parsed)
+        except (KeyError, TypeError, ValueError):
+            _LOGGER.warning("Invalid price version metadata; keeping the cached prices")
+        else:
+            self._maybe_fetch_prices()
         return parsed
+
+    def _maybe_fetch_prices(self, *, force: bool = False) -> asyncio.Task[None] | None:
+        if self._shutting_down or self._price_auth_failed:
+            return None
+        if self._price_task is not None and not self._price_task.done():
+            return self._price_task
+        now = dt_util.utcnow()
+        if not force and (
+            not self.prices.needs_refresh(now)
+            or (self.prices.retry_at is not None and now < self.prices.retry_at)
+        ):
+            return None
+        self._price_task = self.hass.async_create_background_task(
+            self._async_fetch_prices(), "EnergyOpt price snapshot"
+        )
+        return self._price_task
+
+    async def async_refresh_prices(self) -> None:
+        """Manual refresh: coalesce requests and limit repeated button presses."""
+        if self._price_auth_failed:
+            raise HomeAssistantError("Price authentication failed; reconfigure EnergyOpt")
+        now = dt_util.utcnow()
+        if self._price_task is not None and not self._price_task.done():
+            self._manual_price_refresh_at = now + timedelta(seconds=60)
+            await asyncio.shield(self._price_task)
+            if self.prices.last_error:
+                raise HomeAssistantError(self.prices.last_error)
+            return
+        if self._manual_price_refresh_at is not None and now < self._manual_price_refresh_at:
+            return
+        self._manual_price_refresh_at = now + timedelta(seconds=60)
+        if task := self._maybe_fetch_prices(force=True):
+            await asyncio.shield(task)
+            if self.prices.last_error:
+                raise HomeAssistantError(self.prices.last_error)
+
+    async def _async_fetch_prices(self) -> None:
+        try:
+            async with self._session.get(
+                f"{self._base_url}/v1/sites/{self._site_id}/prices",
+                headers={"Authorization": f"Bearer {self._api_key}"},
+                timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT),
+            ) as response:
+                if response.status in (401, 403):
+                    self._price_auth_failed = True
+                    raise ValueError("Price authentication failed; reconfigure EnergyOpt")
+                response.raise_for_status()
+                payload = await response.json()
+            now = dt_util.utcnow()
+            self.prices.accept(payload, now)
+            self.prices.last_error = None
+            self.prices.failures = 0
+            # A publication can race the two endpoints. A still-missing version
+            # waits five minutes rather than starting another immediate request.
+            self.prices.retry_at = (
+                now + timedelta(minutes=5) if self.prices.needs_refresh(now) else None
+            )
+        except (aiohttp.ClientError, TimeoutError, KeyError, TypeError, ValueError) as err:
+            self.prices.last_error = str(err)
+            self.prices.failures += 1
+            minutes = (5, 15, 60, 360)[min(self.prices.failures - 1, 3)]
+            self.prices.retry_at = dt_util.utcnow() + timedelta(minutes=minutes)
+            _LOGGER.warning("Price download failed; keeping the cache: %s", err)
+        try:
+            await self.prices.async_save()
+        except (OSError, HomeAssistantError):
+            _LOGGER.warning("Unable to save the price cache")
+        self._schedule_price_retry()
+        if self.data is not None and not self._shutting_down:
+            self.async_update_listeners()
+
+    def _schedule_price_retry(self) -> None:
+        if self._unsub_price_retry is not None:
+            self._unsub_price_retry()
+            self._unsub_price_retry = None
+        if self.prices.retry_at is None or self._price_auth_failed or self._shutting_down:
+            return
+
+        @callback
+        def retry(now: datetime) -> None:
+            self._unsub_price_retry = None
+            self._maybe_fetch_prices()
+
+        self._unsub_price_retry = async_track_point_in_utc_time(
+            self.hass, retry, self.prices.retry_at
+        )
 
     @staticmethod
     def _parse(data: dict[str, Any]) -> dict[str, Any]:

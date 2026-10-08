@@ -7,20 +7,22 @@ from functools import partial
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 
 from .const import (
-    SELF_CONTROLLED_TYPES,
     CONF_API_KEY,
     CONF_BASE_URL,
     CONF_POLL_INTERVAL,
     CONF_SITE_ID,
     DEFAULT_POLL_INTERVAL,
+    SELF_CONTROLLED_TYPES,
 )
 from .coordinator import EnergyOptCoordinator
 
 PLATFORMS: list[Platform] = [
     Platform.BINARY_SENSOR,
+    Platform.BUTTON,
     Platform.CALENDAR,
     Platform.SENSOR,
 ]

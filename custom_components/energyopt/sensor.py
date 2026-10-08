@@ -74,6 +74,14 @@ DEVICE_SENSORS: tuple[EnergyOptDeviceSensorDescription, ...] = (
 
 SITE_SENSORS: tuple[EnergyOptSiteSensorDescription, ...] = (
     EnergyOptSiteSensorDescription(
+        key="price_data",
+        translation_key="price_data",
+        name="Price data",
+        icon="mdi:chart-line",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        value_fn=lambda data: None,
+    ),
+    EnergyOptSiteSensorDescription(
         key="price_now",
         translation_key="price_now",
         name="Price now",
@@ -285,6 +293,8 @@ class EnergyOptSiteSensor(
     @property
     def available(self) -> bool:
         """Return True whenever data is retained, even after a failed poll."""
+        if self.entity_description.key in ("price_now", "price_data"):
+            return self.coordinator.prices.loaded or self.coordinator.data is not None
         return self.coordinator.data is not None
 
     @property
@@ -294,6 +304,16 @@ class EnergyOptSiteSensor(
         The site status reports "stale" while the last successful poll is
         older than the stale window, otherwise the server-reported status.
         """
+        if self.entity_description.key == "price_data":
+            return self.coordinator.prices.last_refreshed_at
+        if self.entity_description.key == "price_now" and self.coordinator.prices.loaded:
+            return self.coordinator.prices.current_price(dt_util.utcnow())
         if self.entity_description.key == "status" and self.coordinator.data_stale:
             return "stale"
         return self.entity_description.value_fn(self.coordinator.data)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        if self.entity_description.key == "price_data":
+            return self.coordinator.prices.dashboard_data(dt_util.utcnow())
+        return None

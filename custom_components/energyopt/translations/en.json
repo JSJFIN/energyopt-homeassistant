@@ -30,6 +30,18 @@
       "reconfigure_successful": "Reconfiguration was successful."
     }
   },
+  "entity": {
+    "sensor": {
+      "price_data": {
+        "name": "Price data"
+      }
+    },
+    "button": {
+      "refresh_prices": {
+        "name": "Refresh prices"
+      }
+    }
+  },
   "options": {
     "step": {
       "init": {

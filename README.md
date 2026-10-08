@@ -22,7 +22,10 @@ Per device:
 
 Site-level:
 
-- `sensor.<site>_price_now` — current spot price (c/kWh)
+- `sensor.<site>_price_now` — current effective price (c/kWh, including site pricing settings)
+- `sensor.<site>_price_data` — last successful price snapshot timestamp, with
+  `today` and `tomorrow` price arrays in its attributes
+- `button.<site>_refresh_prices` — manually refresh the cached price snapshot
 - `sensor.<site>_prices_loaded_until` — timestamp prices are loaded through
 - `sensor.<site>_status` — health/status (`stale` when data is old)
 - `binary_sensor.<site>_prices_loaded` — on when day-ahead prices are loaded
@@ -52,6 +55,66 @@ API key redacted.
 
 Manual install: copy `custom_components/energyopt` into your HA
 `custom_components/` folder and restart.
+
+## Dashboard electricity prices
+
+Requires integration **0.4.4 or newer** and the backend update that adds
+`price_day_versions` to schedule and price responses. HACS updates Home
+Assistant only; deploy the backend update separately.
+
+The **Price data** sensor contains `today` and `tomorrow` arrays. Each slot has
+`start`, `end` (timezone-aware ISO timestamps), and `price_cents_kwh`. Prices
+include your site's VAT, margin, and fixed per-kWh charges. Additional
+attributes expose `timezone`, `price_unit`, `today_date`, `tomorrow_date`,
+`today_available`, `tomorrow_available`, `last_refreshed_at`, and `last_error`.
+Availability means a complete local day, including 23/25-hour DST days;
+partial data remains visible but is not marked complete.
+
+Dashboard reads never call the API. The integration compares day versions
+in its existing schedule poll (normally every five minutes) and downloads
+prices only when a day is missing or changes. Usually this means an initial
+download and one when tomorrow is published. Corrections and pricing-setting
+changes also trigger a download. Current price updates every minute locally;
+midnight rollover and Home Assistant restarts reuse the persisted snapshot.
+
+During outages, cached prices remain available for their actual timestamps;
+the current price becomes unknown once coverage ends. Failed downloads retry
+after 5, 15, and 60 minutes, then every six hours. Authentication errors stop
+price downloads until you reconfigure/reload the integration. The refresh
+button merges concurrent downloads and allows at most one manual refresh
+per minute. With an older backend, only the initial snapshot and manual
+refreshes are available: missing version metadata never causes constant polling.
+
+For a chart, install [ApexCharts Card](https://github.com/RomRider/apexcharts-card)
+and replace the example entity ID with your Price data sensor:
+
+```yaml
+type: custom:apexcharts-card
+graph_span: 50h
+span:
+  start: day
+header:
+  show: true
+  title: Electricity price
+now:
+  show: true
+series:
+  - entity: sensor.home_price_data
+    name: Effective price
+    unit: c/kWh
+    type: column
+    float_precision: 2
+    show:
+      legend_value: false
+    data_generator: |
+      return [...(entity.attributes.today || []),
+              ...(entity.attributes.tomorrow || [])]
+        .map(slot => [new Date(slot.start).getTime(), slot.price_cents_kwh]);
+```
+
+The 50-hour span accommodates DST without clipping the end of tomorrow.
+Use the site's timezone for Home Assistant's dashboard day boundary. The
+chart reads the cached arrays directly; it does not need HA recorder history.
 
 ## Automation blueprint
 
