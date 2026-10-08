@@ -35,6 +35,8 @@ class EnergyOptSiteSensorDescription(SensorEntityDescription):
     """Describes an EnergyOpt site-level sensor."""
 
     value_fn: Callable[[dict[str, Any]], Any]
+    price_view: str | None = None
+    price_data: bool = False
 
 
 DEVICE_SENSORS: tuple[EnergyOptDeviceSensorDescription, ...] = (
@@ -82,6 +84,8 @@ DEVICE_SENSORS: tuple[EnergyOptDeviceSensorDescription, ...] = (
 SITE_SENSORS: tuple[EnergyOptSiteSensorDescription, ...] = (
     EnergyOptSiteSensorDescription(
         key="price_data",
+        price_view="effective",
+        price_data=True,
         translation_key="price_data",
         name="Price data",
         icon="mdi:chart-line",
@@ -90,12 +94,31 @@ SITE_SENSORS: tuple[EnergyOptSiteSensorDescription, ...] = (
     ),
     EnergyOptSiteSensorDescription(
         key="price_now",
+        price_view="effective",
         translation_key="price_now",
         name="Price now",
         icon="mdi:currency-eur",
         native_unit_of_measurement="c/kWh",
         suggested_display_precision=2,
         value_fn=lambda data: data.get("price_now_cents_kwh"),
+    ),
+    *(
+        EnergyOptSiteSensorDescription(
+            key=f"{key}_{suffix}",
+            name=f"{name} {label}",
+            price_view=view,
+            price_data=suffix == "data",
+            device_class=SensorDeviceClass.TIMESTAMP if suffix == "data" else None,
+            icon="mdi:chart-line" if suffix == "data" else "mdi:currency-eur",
+            native_unit_of_measurement=None if suffix == "data" else "c/kWh",
+            suggested_display_precision=None if suffix == "data" else 2,
+            value_fn=lambda data: None,
+        )
+        for key, name, view in (
+            ("raw_spot_price", "Raw spot price", "raw"),
+            ("spot_price_with_vat", "Spot price with VAT", "spot_vat"),
+        )
+        for suffix, label in (("now", "now"), ("data", "data"))
     ),
     EnergyOptSiteSensorDescription(
         key="prices_loaded_until",
@@ -306,7 +329,7 @@ class EnergyOptSiteSensor(
     @property
     def available(self) -> bool:
         """Return True whenever data is retained, even after a failed poll."""
-        if self.entity_description.key in ("price_now", "price_data"):
+        if self.entity_description.price_view:
             return self.coordinator.prices.loaded or self.coordinator.data is not None
         return self.coordinator.data is not None
 
@@ -317,16 +340,24 @@ class EnergyOptSiteSensor(
         The site status reports "stale" while the last successful poll is
         older than the stale window, otherwise the server-reported status.
         """
-        if self.entity_description.key == "price_data":
-            return self.coordinator.prices.last_refreshed_at
-        if self.entity_description.key == "price_now" and self.coordinator.prices.loaded:
-            return self.coordinator.prices.current_price(dt_util.utcnow())
+        view = self.entity_description.price_view
+        if view:
+            if self.entity_description.price_data:
+                return (
+                    self.coordinator.prices.last_refreshed_at
+                    if self.coordinator.prices.has_view(view)
+                    else None
+                )
+            if self.coordinator.prices.loaded or view != "effective":
+                return self.coordinator.prices.current_price(dt_util.utcnow(), view)
         if self.entity_description.key == "status" and self.coordinator.data_stale:
             return "stale"
         return self.entity_description.value_fn(self.coordinator.data)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
-        if self.entity_description.key == "price_data":
-            return self.coordinator.prices.dashboard_data(dt_util.utcnow())
+        if self.entity_description.price_data:
+            return self.coordinator.prices.dashboard_data(
+                dt_util.utcnow(), self.entity_description.price_view or "effective"
+            )
         return None

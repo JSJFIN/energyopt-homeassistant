@@ -225,6 +225,9 @@ class EnergyOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         try:
             async with self._session.get(
                 f"{self._base_url}/v1/sites/{self._site_id}/prices",
+                params={"view": "all"}
+                if self.prices.expected_view_versions is not None
+                else None,
                 headers={"Authorization": f"Bearer {self._api_key}"},
                 timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT),
             ) as response:
@@ -234,7 +237,9 @@ class EnergyOptCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 response.raise_for_status()
                 payload = await response.json()
             now = dt_util.utcnow()
-            self.prices.accept(payload, now)
+            self.prices.accept(
+                payload, now, require_all=self.prices.expected_view_versions is not None
+            )
             self.prices.last_error = None
             self.prices.failures = 0
             # A publication can race the two endpoints. A still-missing version

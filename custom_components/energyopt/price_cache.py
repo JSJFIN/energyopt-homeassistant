@@ -14,6 +14,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.storage import Store
 
+PRICE_VIEWS = ("effective", "raw", "spot_vat")
+
 
 @dataclass(frozen=True)
 class CachedPrice:
@@ -48,6 +50,30 @@ def _versions(value: Any) -> dict[str, str]:
     return dict(value)
 
 
+def _snapshot(data: dict[str, Any]) -> dict[str, Any]:
+    prices = data["prices"]
+    if not isinstance(prices, list):
+        raise TypeError("Invalid price list")
+    slots = []
+    for price in prices:
+        start, end = _datetime(price["start"]), _datetime(price["end"])
+        value = float(price["price_cents_kwh"])
+        if start >= end or not math.isfinite(value):
+            raise ValueError("Invalid price slot")
+        slots.append(CachedPrice(start, end, value))
+    slots.sort(key=lambda slot: slot.start)
+    if any(a.end > b.start for a, b in pairwise(slots)):
+        raise ValueError("Overlapping price slots")
+    vat = data.get("vat_percent")
+    if vat is not None and not math.isfinite(float(vat)):
+        raise ValueError("Invalid VAT percentage")
+    return {
+        "slots": slots,
+        "versions": _versions(data.get("price_day_versions", {})),
+        "vat_percent": vat,
+    }
+
+
 class PriceCache:
     def __init__(self, hass: HomeAssistant, base_url: str, site_id: str) -> None:
         identity = hashlib.sha256(f"{base_url}:{site_id}".encode()).hexdigest()
@@ -61,6 +87,8 @@ class PriceCache:
         self.last_error: str | None = None
         self.expected_timezone: str | None = None
         self.expected_versions: dict[str, str] | None = None
+        self.expected_view_versions: dict[str, dict[str, str]] | None = None
+        self.views: dict[str, dict[str, Any]] = {}
 
     @property
     def loaded(self) -> bool:
@@ -84,6 +112,7 @@ class PriceCache:
             # A broken cache must not prevent schedule control from loading.
             self.slots = []
             self.day_versions = {}
+            self.views = {}
             self.last_refreshed_at = None
             self.retry_at = None
             self.failures = 0
@@ -95,6 +124,16 @@ class PriceCache:
                 "timezone": self.timezone,
                 "prices": [slot.as_dict() for slot in self.slots],
                 "price_day_versions": self.day_versions,
+                "price_views": {
+                    view: {
+                        "prices": [slot.as_dict() for slot in data["slots"]],
+                        "price_day_versions": data["versions"],
+                        "vat_percent": data["vat_percent"],
+                    }
+                    for view, data in self.views.items()
+                }
+                if len(self.views) == len(PRICE_VIEWS)
+                else None,
                 "last_refreshed_at": self.last_refreshed_at.isoformat()
                 if self.last_refreshed_at
                 else None,
@@ -109,8 +148,19 @@ class PriceCache:
         ZoneInfo(timezone)
         versions = schedule.get("price_day_versions")
         parsed = _versions(versions) if versions is not None else None
+        view_versions = schedule.get("price_view_versions")
+        parsed_views = None
+        if view_versions is not None:
+            if not isinstance(view_versions, dict) or set(view_versions) != set(
+                PRICE_VIEWS
+            ):
+                raise ValueError("Invalid price view versions")
+            parsed_views = {
+                view: _versions(view_versions[view]) for view in PRICE_VIEWS
+            }
         self.expected_timezone = timezone
         self.expected_versions = parsed
+        self.expected_view_versions = parsed_views
 
     def needs_refresh(self, now: datetime) -> bool:
         if self.expected_timezone is None:
@@ -121,6 +171,23 @@ class PriceCache:
             return not self.loaded
         today = now.astimezone(ZoneInfo(self.expected_timezone)).date()
         wanted = {today.isoformat(), (today + timedelta(days=1)).isoformat()}
+        if self.expected_view_versions is not None:
+            return any(
+                day in wanted
+                and (
+                    self.expected_timezone != self.timezone
+                    or self.views.get(view, {}).get("versions", {}).get(day) != version
+                    or not any(
+                        slot.start.astimezone(ZoneInfo(self.timezone))
+                        .date()
+                        .isoformat()
+                        == day
+                        for slot in self.views.get(view, {}).get("slots", [])
+                    )
+                )
+                for view, versions in self.expected_view_versions.items()
+                for day, version in versions.items()
+            )
         return any(
             day in wanted
             and (
@@ -135,56 +202,71 @@ class PriceCache:
             for day, version in self.expected_versions.items()
         )
 
-    def accept(self, data: dict[str, Any], now: datetime) -> None:
+    def accept(
+        self, data: dict[str, Any], now: datetime, *, require_all: bool = False
+    ) -> None:
         """Validate the complete response before replacing the previous cache."""
         if not isinstance(data, dict):
             raise TypeError("Invalid price snapshot")
         timezone = data["timezone"]
         ZoneInfo(timezone)
-        prices = data["prices"]
-        if not isinstance(prices, list):
-            raise TypeError("Invalid price list")
-        slots = []
-        for price in prices:
-            start, end = _datetime(price["start"]), _datetime(price["end"])
-            value = float(price["price_cents_kwh"])
-            if start >= end or not math.isfinite(value):
-                raise ValueError("Invalid price slot")
-            slots.append(CachedPrice(start, end, value))
-        slots.sort(key=lambda slot: slot.start)
-        if any(a.end > b.start for a, b in pairwise(slots)):
-            raise ValueError("Overlapping price slots")
-        versions = _versions(data.get("price_day_versions", {}))
+        effective = _snapshot(data)
+        views = {"effective": effective}
+        supplied = data.get("price_views")
+        if supplied is not None:
+            if not isinstance(supplied, dict) or set(supplied) != set(PRICE_VIEWS):
+                raise ValueError("Incomplete price views")
+            views = {view: _snapshot(supplied[view]) for view in PRICE_VIEWS}
+            if views["effective"]["slots"] != effective["slots"]:
+                raise ValueError("Inconsistent effective prices")
+            bounds = [(slot.start, slot.end) for slot in effective["slots"]]
+            if any(
+                [(slot.start, slot.end) for slot in value["slots"]] != bounds
+                for value in views.values()
+            ):
+                raise ValueError("Misaligned price views")
+        elif require_all:
+            raise ValueError("Backend omitted advertised price views")
         self.timezone = timezone
-        self.slots = slots
-        self.day_versions = versions
+        self.views = views
+        self.slots = effective["slots"]
+        self.day_versions = effective["versions"]
         self.last_refreshed_at = now.astimezone(UTC)
 
-    def current_price(self, now: datetime) -> float | None:
+    def has_view(self, view: str) -> bool:
+        return self.loaded and view in self.views
+
+    def current_price(self, now: datetime, view: str = "effective") -> float | None:
         if self.expected_timezone not in (None, self.timezone):
             return None
         return next(
             (
                 slot.price_cents_kwh
-                for slot in self.slots
+                for slot in self.views.get(view, {}).get("slots", [])
                 if slot.start <= now < slot.end
             ),
             None,
         )
 
-    def dashboard_data(self, now: datetime) -> dict[str, Any]:
+    def dashboard_data(self, now: datetime, view: str = "effective") -> dict[str, Any]:
         timezone = self.expected_timezone or self.timezone
         tz = ZoneInfo(timezone)
         today = now.astimezone(tz).date()
         result: dict[str, Any] = {
             "timezone": timezone,
             "price_unit": "c/kWh",
-            "last_refreshed_at": self.last_refreshed_at,
+            "last_refreshed_at": self.last_refreshed_at
+            if self.has_view(view)
+            else None,
             "last_error": self.last_error,
+            "price_view": view,
+            "vat_percent": self.views.get(view, {}).get("vat_percent"),
         }
         for label, day in (("today", today), ("tomorrow", today + timedelta(days=1))):
             slots = [
-                slot for slot in self.slots if slot.start.astimezone(tz).date() == day
+                slot
+                for slot in self.views.get(view, {}).get("slots", [])
+                if slot.start.astimezone(tz).date() == day
             ]
             if self.expected_timezone not in (None, self.timezone):
                 slots = []

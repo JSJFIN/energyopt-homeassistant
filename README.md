@@ -118,6 +118,83 @@ The 50-hour span accommodates DST without clipping the end of tomorrow.
 Use the site's timezone for Home Assistant's dashboard day boundary. The
 chart reads the cached arrays directly; it does not need HA recorder history.
 
+### Raw spot and spot with VAT
+
+Integration **0.4.6** adds four sensors alongside the existing effective
+**Price now** and **Price data** sensors:
+
+| Sensor | Charges included |
+| --- | --- |
+| Raw spot price now / Raw spot price data | None: original market spot, without VAT |
+| Spot price with VAT now / Spot price with VAT data | Site VAT only, no seller margin or fixed extra |
+| Price now / Price data (unchanged) | Seller margin, site VAT, and fixed per-kWh extra |
+
+All values use `c/kWh`. The formulas are `raw = spot`,
+`spot_vat = spot * (1 + vat_percent / 100)`, and
+`effective = (spot + seller_margin) * (1 + vat_percent / 100) + fixed_extra`.
+Optimization, should-run decisions, and cost estimates always use effective
+prices, regardless of which sensors you display. The web **Power plan** page
+also offers these three display views without changing the schedule.
+
+Deploy the backend update first. It supports
+`GET /v1/sites/{site_id}/prices?view=raw`, `view=spot_vat`, and `view=all`;
+no query parameter still returns effective prices. `view=all` retains the
+effective `prices` at top level and adds a `price_views` mapping containing
+`effective`, `raw`, and `spot_vat`, each with `prices`, `price_day_versions`,
+`price_unit`, and `vat_percent`. Schedule responses advertise
+`price_view_versions`. The same site authentication applies to every view.
+Version tokens are opaque: new view tokens include VAT metadata, while the
+legacy top-level effective `price_day_versions` remain unchanged.
+The demo's file/synthetic fallback has no site charges: its three views
+therefore have identical values and report zero VAT, preserving the old demo.
+
+HA downloads **one all-view snapshot**, not three separate requests. Raw and
+VAT-view corrections are detected through the existing schedule poll; all
+views share persistent storage, retries, and the refresh button. On an older
+backend, effective sensors continue working and additional sensors remain
+unknown; HA does not repeatedly try an unsupported API view.
+
+Find the actual sensor IDs under **Settings → Devices & services → EnergyOpt**;
+HA prefixes them with your site device name, and renamed entities keep their
+chosen IDs. To compare raw and effective prices, replace both example IDs:
+
+```yaml
+type: custom:apexcharts-card
+graph_span: 50h
+span:
+  start: day
+now:
+  show: true
+header:
+  show: true
+  title: Raw and effective electricity prices
+series:
+  - entity: sensor.energyopt_site_home_raw_spot_price_data
+    name: Raw spot (no VAT)
+    unit: c/kWh
+    type: line
+    float_precision: 2
+    show:
+      legend_value: false
+    data_generator: |
+      return [...(entity.attributes.today || []), ...(entity.attributes.tomorrow || [])]
+        .map(slot => [new Date(slot.start).getTime(), slot.price_cents_kwh]);
+  - entity: sensor.energyopt_site_home_price_data
+    name: Effective price
+    unit: c/kWh
+    type: line
+    float_precision: 2
+    show:
+      legend_value: false
+    data_generator: |
+      return [...(entity.attributes.today || []), ...(entity.attributes.tomorrow || [])]
+        .map(slot => [new Date(slot.start).getTime(), slot.price_cents_kwh]);
+```
+
+Use **Spot price with VAT data** instead of **Raw spot price data** to compare
+with a VAT-inclusive Nordpool display that excludes seller charges. You can
+also add it as a third series, or display any one view alone.
+
 ## Automation blueprint
 
 [`control_switch_from_schedule.yaml`](blueprints/automation/energyopt/control_switch_from_schedule.yaml)
